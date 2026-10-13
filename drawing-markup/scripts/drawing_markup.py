@@ -47,11 +47,14 @@ COLOUR_SAT = 60          # pixel with channel spread above this counts as colour
 
 
 def colour(c):
+    """Colour name, '#RRGGBB' or an (r, g, b) tuple of 0-1 floats -> (r, g, b)."""
     if isinstance(c, (tuple, list)):
         return tuple(c)
     c = c.strip().lower()
     if c.startswith("#"):
         return tuple(int(c[i:i + 2], 16) / 255 for i in (1, 3, 5))
+    if c not in COLOURS:
+        raise ValueError("unknown colour %r (use one of %s, or #RRGGBB)" % (c, ", ".join(sorted(COLOURS))))
     return COLOURS[c]
 
 
