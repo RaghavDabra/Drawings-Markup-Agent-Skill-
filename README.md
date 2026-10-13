@@ -32,7 +32,19 @@ python drawing-markup/scripts/drawing_markup.py area   in.pdf out.pdf --page 9 -
 Vector PDFs only (scans are refused). Rooms open to each other cannot be isolated and are reported. Colours blend if you re-run on an already coloured PDF, so always start from the original.
 
 ## Install
-`pip install pymupdf numpy pillow openpyxl`. To use as an agent skill, zip the `drawing-markup/` folder (SKILL.md + scripts/) and add it to your agent; paste `Agent_Instructions.txt` into the agent's instructions.
+`pip install -r requirements.txt`. To use as an agent skill, zip the `drawing-markup/` folder (SKILL.md + scripts/) and add it to your agent; paste `Agent_Instructions.txt` into the agent's instructions.
+
+## Area rules
+`--rules` takes comma-separated tests on the m2 written in each label; the first match wins.
+Operators: `>`, `<`, `>=`, `<=`, `=`. Example: `">8:blue,<8:orange,=8:pink"`.
+Labels with no m2, or rooms that are open to a neighbouring space, are reported as NOT coloured.
+
+## Tests
+```
+pip install -r requirements.txt pytest
+pytest -q                 # everything
+pytest -q -m "not slow"   # skip the end-to-end area test
+```
 
 ## Licence
 MIT, see LICENSE.
