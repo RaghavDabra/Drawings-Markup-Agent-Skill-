@@ -24,7 +24,7 @@ Design rules that make it reliable:
   * All markup goes on its own PDF layer ("Debuilt markup") so it can be switched off in Acrobat/Bluebeam.
 """
 
-import argparse, csv, math, os, re, sys
+import argparse, csv, math, os, re
 import numpy as np
 from PIL import Image, ImageDraw
 
@@ -625,7 +625,6 @@ def run_units(pdf, out_pdf, table, pages=None, status_colours=None, aspect=None,
     by_id = _UnitKeys()
     for w in wanted:
         by_id.setdefault(w["unit"], []).append(w)
-    done = set()
     # Two passes over the sheets. "calibrate" learns the drawn-area / labelled-m2 ratio from every unit on every
     # sheet; "paint" then checks each unit against it. A sheet with only a few units (e.g. a penthouse level)
     # can't calibrate itself: its own median would just be whichever polygon happened to sit nearest a label.
