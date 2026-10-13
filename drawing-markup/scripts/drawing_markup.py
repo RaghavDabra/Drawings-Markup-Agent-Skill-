@@ -1012,6 +1012,10 @@ if __name__ == "__main__":
     ap.add_argument("--no-room", dest="room", action="store_false", default=None, help="area op: force coloured-fill plan (default: auto-detect)")
     ap.add_argument("--checks", default=None, help="folder for check PNGs (default: next to output)")
     a = ap.parse_args()
+    need = {"label": ("page", "text"), "leader": ("page", "text"), "area": ("page", "text", "rules"), "units": ("table",)}
+    missing = ["--" + k for k in need[a.op] if getattr(a, k) is None]
+    if missing:
+        ap.error("%s needs %s" % (a.op, ", ".join(missing)))
     checks = a.checks or os.path.splitext(a.out)[0] + "_checks"
     which = [int(x) for x in a.which.split(",")] if a.which else None
     if a.op == "label":
