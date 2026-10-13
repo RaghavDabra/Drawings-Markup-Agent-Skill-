@@ -41,7 +41,7 @@ Labels with no m2, or rooms that are open to a neighbouring space, are reported 
 
 ## Tests
 ```
-pip install -r requirements.txt pytest
+pip install -r requirements.txt pytest pyyaml
 pytest -q                 # everything
 pytest -q -m "not slow"   # skip the end-to-end area test
 ```

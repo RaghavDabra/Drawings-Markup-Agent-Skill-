@@ -1,6 +1,6 @@
 ---
 name: drawing-markup
-description: Colour-code vector construction drawing PDFs. Use when the user attaches a drawing PDF (optionally a sales Excel) and asks to colour, highlight or mark areas: a labelled room or area, whatever a tag's leader line points to, apartments by sold/unsold status, or labelled areas by the m2 written in the label.
+description: "Colour-code vector construction drawing PDFs. Use when the user attaches a drawing PDF (optionally a sales Excel) and asks to colour, highlight or mark areas: a labelled room or area, whatever a tag's leader line points to, apartments by sold/unsold status, or labelled areas by the m2 written in the label."
 ---
 
 # Drawing markup
