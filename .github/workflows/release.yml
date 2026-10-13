@@ -1,0 +1,19 @@
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  skill-zip:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build drawing-markup.zip (SKILL.md at the top level)
+        run: cd drawing-markup && zip -r ../drawing-markup.zip SKILL.md scripts
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: drawing-markup.zip
