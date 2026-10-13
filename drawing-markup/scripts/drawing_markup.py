@@ -52,6 +52,8 @@ def colour(c):
         return tuple(c)
     c = c.strip().lower()
     if c.startswith("#"):
+        if not re.fullmatch(r"#[0-9a-f]{6}", c):
+            raise ValueError("bad hex colour %r (use #RRGGBB)" % c)
         return tuple(int(c[i:i + 2], 16) / 255 for i in (1, 3, 5))
     if c not in COLOURS:
         raise ValueError("unknown colour %r (use one of %s, or #RRGGBB)" % (c, ", ".join(sorted(COLOURS))))
