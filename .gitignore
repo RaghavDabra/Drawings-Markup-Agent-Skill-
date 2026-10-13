@@ -218,3 +218,9 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# drawing-markup outputs
+*_log.csv
+*_checks/
+checks/
+*.pdf
