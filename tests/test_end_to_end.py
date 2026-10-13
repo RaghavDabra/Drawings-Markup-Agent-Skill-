@@ -31,3 +31,18 @@ def test_run_label_colours_the_room(plan, tmp_path):
 def test_run_label_reports_missing_text(plan, tmp_path):
     log = dm.run_label(str(plan), str(tmp_path / "out.pdf"), 1, "POOL", dm.colour("red"))
     assert log == [{"page": 1, "target": "POOL", "status": "NOT found on page"}]
+
+
+def test_write_log_round_trips(tmp_path):
+    rows = [{"page": 1, "status": "coloured"}, {"page": 2, "status": "NOT coloured", "reason": "open"}]
+    path = tmp_path / "log.csv"
+    dm.write_log(rows, path)
+    got = list(csv.DictReader(open(path)))
+    assert [r["reason"] for r in got] == ["", "open"]
+
+
+def test_markup_goes_on_its_own_layer(plan, tmp_path):
+    out = tmp_path / "out.pdf"
+    dm.run_label(str(plan), str(out), 1, "GYM", dm.colour("green"))
+    layers = [v["name"] for v in pymupdf.open(out).get_ocgs().values()]
+    assert "Debuilt markup" in layers
