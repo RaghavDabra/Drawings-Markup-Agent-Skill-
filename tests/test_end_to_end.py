@@ -61,6 +61,7 @@ def balconies(tmp_path):
     return path
 
 
+@pytest.mark.slow
 def test_area_rule_colours_by_labelled_m2(balconies, tmp_path):
     rules = dm._parse_rules(">8:blue,<8:orange")
     log = dm.run_area_rule(str(balconies), str(tmp_path / "out.pdf"), 1, "BALCONY", rules)
