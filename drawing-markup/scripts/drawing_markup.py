@@ -1,20 +1,23 @@
 """
 drawing_markup.py  -  colour regions of vector construction drawings (PDF).
 
-Needs only: pymupdf (fitz), numpy, Pillow.  Works in M365 Copilot Analyst / Code Interpreter.
+Needs only: pymupdf (fitz), numpy, Pillow (openpyxl for Excel tables).  Works in M365 Copilot Analyst / Code Interpreter.
 
-Three operations (all write a new PDF, a check PNG per edit, and a log table):
+Four operations (all write a new PDF, a check PNG per edit, and a log table):
 
   label     colour the closed region that contains a text label        e.g. "1:8" on page 8
   leader    colour the region a tag's leader line points to            e.g. "ST2" on page 17
   units     colour apartment polygons from a status table (Excel/CSV)  e.g. sold=green, unsold=red
+  area      colour labelled areas by the m2 written in their label     e.g. balconies >8 m2 blue, <8 orange
 
 Examples (command line):
   python drawing_markup.py label  in.pdf out.pdf --page 8  --text "1:8" --colour red
   python drawing_markup.py leader in.pdf out.pdf --page 17 --text ST2   --colour red
   python drawing_markup.py units  in.pdf out.pdf --table sales.xlsx --pages 10-21
+  python drawing_markup.py area   in.pdf out.pdf --page 9 --text "Consultation Room" --rules "==15:purple,==14:red"
 
-Or from Python:  import drawing_markup as dm;  dm.run_label(...), dm.run_leader(...), dm.run_units(...)
+Or from Python:  import drawing_markup as dm;  dm.run_label(...), dm.run_leader(...), dm.run_units(...),
+                 dm.run_area_rule(...)
 
 Design rules that make it reliable:
   * Never guesses coordinates.  Every target is found from the PDF itself (text, leader geometry, filled polygons).
