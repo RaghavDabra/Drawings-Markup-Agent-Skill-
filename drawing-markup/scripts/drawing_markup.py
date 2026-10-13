@@ -937,7 +937,7 @@ def _best_region(page, label_rect, target_pt2, kw):
 
 def _on_colour_fill(page, c):
     """True if point c sits on a small non-white, non-black vector fill (a coloured room/area polygon)."""
-    for d in page.get_drawings():
+    for d in _drawings(page):  # cached: called once per label, and get_drawings() is slow on big sheets
         f = d.get("fill")
         if f is None or len(f) != 3 or min(f) > 0.97 or max(f) < 0.05:
             continue
