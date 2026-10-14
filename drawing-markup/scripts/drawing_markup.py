@@ -228,8 +228,9 @@ def _render(page, clip, hide_text=True, px=None):
         tmp.insert_pdf(page.parent, from_page=page.number, to_page=page.number)
         src = tmp[0]
         src.set_rotation(0)
-        for w in src.get_text("words"):
-            src.add_redact_annot(fitz.Rect(w[:4]))
+        # one page-sized redaction removes every glyph but (with the options below) keeps all linework;
+        # a redaction per word is quadratic and takes minutes on dense sheets
+        src.add_redact_annot(src.rect + (-10, -10, 10, 10))
         src.apply_redactions(images=fitz.PDF_REDACT_IMAGE_NONE, graphics=fitz.PDF_REDACT_LINE_ART_NONE)
         _TEXTLESS[key] = (src, tmp)
     pix = src.get_pixmap(matrix=fitz.Matrix(px or PX_PER_PT, px or PX_PER_PT), clip=clip, alpha=False)
@@ -278,47 +279,69 @@ def _arc_centre(a, b, c, e):
     return fitz.Point(a.x + u * n1.x, a.y + u * n1.y)
 
 
+_DARK_ITEMS = {}  # page -> list of (is_stroke, width, items) for dark drawings only, filtered once
+_DARK_MASK = {}   # (page, px, m_bucket) -> full-page dark-linework mask
+
+
+def _dark_items(page, max_grey=0.45):
+    key = (id(page.parent), page.number)
+    if key not in _DARK_ITEMS:
+        dark = lambda c: c is not None and max(c) <= max_grey and max(c) - min(c) < 0.15
+        out = []
+        for d in _drawings(page):
+            st, fi = dark(d.get("color")), dark(d.get("fill"))
+            if st or fi:
+                out.append((st, fi, max(1, round(d.get("width") or 0)), d["items"]))
+        _DARK_ITEMS[key] = out
+    return _DARK_ITEMS[key]
+
+
 def _dark_linework(page, clip, px, max_grey=0.45, m_per_pt=None):
     """Boolean mask of only the dark (black / near-black) vector strokes and fills inside clip.
     Furniture, fixtures and hatching drawn in grey are left out, so a room fill passes over them.
     With m_per_pt (sheet scale known), every door swing (an arc of 0.5-1.3 m radius) is closed by drawing
-    its two radii, so an open doorway does not join a room to the corridor."""
-    W, H = int(clip.width * px) + 1, int(clip.height * px) + 1
-    im = Image.new("L", (W, H), 0)
-    dr = ImageDraw.Draw(im)
-    tx = lambda p: ((p.x - clip.x0) * px, (p.y - clip.y0) * px)
-    dark = lambda c: c is not None and max(c) <= max_grey and max(c) - min(c) < 0.15
-    for d in page.get_drawings():
-        if not d["rect"].intersects(clip):
-            continue
-        st, fi = dark(d.get("color")), dark(d.get("fill"))
-        if not (st or fi):
-            continue
-        w = max(1, int(round((d.get("width") or 0) * px)))
-        for it in d["items"]:
-            if it[0] == "l":
-                pts = [tx(it[1]), tx(it[2])]
-            elif it[0] == "c":
-                a, b, c2, e = it[1:5]
-                if m_per_pt and st:
-                    hinge = _arc_centre(a, b, c2, e)
-                    if hinge is not None:
-                        rad = abs(hinge - a) * m_per_pt
-                        if 0.5 <= rad <= 1.3 and abs(abs(hinge - e) - abs(hinge - a)) < 0.1 * abs(hinge - a):
-                            dr.line([tx(a), tx(hinge), tx(e)], fill=255, width=max(w, 2))
-                pts = [tx(fitz.Point((1-t)**3*a.x+3*(1-t)**2*t*b.x+3*(1-t)*t*t*c2.x+t**3*e.x,
-                                     (1-t)**3*a.y+3*(1-t)**2*t*b.y+3*(1-t)*t*t*c2.y+t**3*e.y)) for t in np.linspace(0, 1, 9)]
-            elif it[0] == "re":
-                r = fitz.Rect(it[1]); pts = [tx(r.tl), tx(r.tr), tx(r.br), tx(r.bl), tx(r.tl)]
-            elif it[0] == "qu":
-                q = it[1]; pts = [tx(q.ul), tx(q.ur), tx(q.lr), tx(q.ll), tx(q.ul)]
-            else:
-                continue
-            if fi and len(pts) > 2:
-                dr.polygon(pts, fill=255)
-            if st or fi:
-                dr.line(pts, fill=255, width=w)
-    return np.array(im)[: int(clip.height * px), : int(clip.width * px)] > 0
+    its two radii, so an open doorway does not join a room to the corridor.
+
+    The whole-page mask is rendered once per resolution and cached; each call just crops it. Rebuilding it
+    from the page's (often >100k) vector items for every seed window was what made multi-unit linework
+    sheets time out."""
+    pr = page.rect
+    key = (id(page.parent), page.number, round(px, 3), round((m_per_pt or 0), 4))
+    mask = _DARK_MASK.get(key)
+    if mask is None:
+        W, H = int(pr.width * px) + 1, int(pr.height * px) + 1
+        im = Image.new("L", (W, H), 0)
+        dr = ImageDraw.Draw(im)
+        tx = lambda p: ((p.x - pr.x0) * px, (p.y - pr.y0) * px)
+        for st, fi, w0, items in _dark_items(page, max_grey):
+            w = max(1, int(round(w0 * px)))
+            for it in items:
+                if it[0] == "l":
+                    pts = [tx(it[1]), tx(it[2])]
+                elif it[0] == "c":
+                    a, b, c2, e = it[1:5]
+                    if m_per_pt and st:
+                        hinge = _arc_centre(a, b, c2, e)
+                        if hinge is not None:
+                            rad = abs(hinge - a) * m_per_pt
+                            if 0.5 <= rad <= 1.3 and abs(abs(hinge - e) - abs(hinge - a)) < 0.1 * abs(hinge - a):
+                                dr.line([tx(a), tx(hinge), tx(e)], fill=255, width=max(w, 2))
+                    pts = [tx(fitz.Point((1-t)**3*a.x+3*(1-t)**2*t*b.x+3*(1-t)*t*t*c2.x+t**3*e.x,
+                                         (1-t)**3*a.y+3*(1-t)**2*t*b.y+3*(1-t)*t*t*c2.y+t**3*e.y)) for t in np.linspace(0, 1, 9)]
+                elif it[0] == "re":
+                    r = fitz.Rect(it[1]); pts = [tx(r.tl), tx(r.tr), tx(r.br), tx(r.bl), tx(r.tl)]
+                elif it[0] == "qu":
+                    q = it[1]; pts = [tx(q.ul), tx(q.ur), tx(q.lr), tx(q.ll), tx(q.ul)]
+                else:
+                    continue
+                if fi and len(pts) > 2:
+                    dr.polygon(pts, fill=255)
+                if st or fi:
+                    dr.line(pts, fill=255, width=w)
+        mask = _DARK_MASK[key] = np.array(im) > 0
+    x0 = int(round((clip.x0 - pr.x0) * px)); y0 = int(round((clip.y0 - pr.y0) * px))
+    W, H = int(clip.width * px), int(clip.height * px)
+    return mask[y0:y0 + H, x0:x0 + W]
 
 
 GAP_STEPS = (1, 3, 6, 10)  # px; lets the fill close hairline gaps where CAD lines don't quite meet
