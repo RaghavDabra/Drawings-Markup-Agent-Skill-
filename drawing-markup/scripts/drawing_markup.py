@@ -687,15 +687,58 @@ def _status_word(st, sc):
     return ("coloured " + (name or "custom")) if rgb else "coloured yellow (status unclear)"
 
 
+# Apartment-label matching (the reliable "follow the labelisation" method).
+# Every sheet labels each apartment with its number next to its area, e.g. "1.03+  TWO BEDROOM  78.4 m2".
+# Door/window tags (1.03-01) carry no area beside them, so requiring an area figure next to the number picks
+# out the one real apartment label and nothing else - no walls, rooms, corridors or geometry are involved.
+_AREA_UNIT_RE = re.compile(r"^(m²|m2|sqm|sq\.?m|m\^?2|㎡)\.?$", re.I)
+_AREA_JOIN_RE = re.compile(r"^\d{2,4}(?:\.\d+)?\s*(?:m²|m2|sqm|㎡)$", re.I)
+_AREA_WORDS = {"square", "metre", "metres", "meter", "meters", "sqm"}
+
+
+def _unit_label_rects(page, by_id):
+    """Find each unit's apartment label: its number sitting beside an area figure (m2 / sqm / square metres).
+    Returns {unit_key: fitz.Rect}. The largest matching block wins if a number appears more than once."""
+    ws = page.get_text("words")
+    best = {}
+    for i, wd in enumerate(ws):
+        t = wd[4].strip()
+        if re.search(r"-\d", t):                       # door / window tag like 1.03-01
+            continue
+        key = _UnitKeys.canon(re.sub(r"[+*]+$", "", t))
+        if key not in by_id:
+            continue
+        nxt = " ".join(w[4] for w in ws[i + 1:i + 8])
+        if not _is_unit_label(t, nxt):                 # a bare dimension integer, not a unit number
+            continue
+        grp = fitz.Rect(wd[:4]); area = False
+        for j in range(i + 1, min(len(ws), i + 8)):
+            wj = ws[j]; rj = fitz.Rect(wj[:4]); tok = wj[4].strip()
+            if abs(rj.y0 - wd[1]) > 45 or rj.x0 - wd[0] > 160 or rj.x1 < wd[0] - 20:
+                continue
+            grp |= rj
+            if _AREA_UNIT_RE.match(tok) or _AREA_JOIN_RE.match(tok) or tok.lower() in _AREA_WORDS:
+                area = True
+                if not tok.lower() in _AREA_WORDS:     # stop at the m2 symbol; keep going past a stray "square"
+                    break
+        if area and (key not in best or grp.get_area() > best[key].get_area()):
+            best[key] = grp
+    return best
+
+
 def run_units(pdf, out_pdf, table, pages=None, status_colours=None, aspect=None, check_dir=None,
               unit_col=UNIT_COLS, status_col=STATUS_COLS,
-              aspect_col=("aspect", "orientation", "facing"), tag_col=("tag contains", "building"), sheet=None):
+              aspect_col=("aspect", "orientation", "facing"), tag_col=("tag contains", "building"), sheet=None,
+              style="label"):
     """Colour each unit by its sales status. Default colours: sold blue, unsold pink, settled grey, reserved
-    orange (override with status_colours={"sold": ..., ...}). aspect='north' limits to rows whose aspect contains it."""
+    orange (override with status_colours={"sold": ..., ...}). aspect='north' limits to rows whose aspect contains it.
+    style="label" (default) highlights each apartment's number+area label in its status colour - reliable on any
+    drawing and never touches corridors or rooms. style="fill" shades each unit's drawn area (works only where the
+    plan draws each unit as one fill polygon)."""
     status_colours = dict(status_colours or STATUS_COLOURS)
     rows = read_table(table, sheet, unit_col, status_col)
     work = Work(pdf)
-    pages = pages or range(1, len(work.doc) + 1)
+    pages = list(pages or range(1, len(work.doc) + 1))
     wanted = []
     for r in rows:
         u = _pick(r, *unit_col); s = status_of(_pick(r, *status_col)); a = _pick(r, *aspect_col)
@@ -704,6 +747,34 @@ def run_units(pdf, out_pdf, table, pages=None, status_colours=None, aspect=None,
     by_id = _UnitKeys()
     for w in wanted:
         by_id.setdefault(w["unit"], []).append(w)
+
+    if style == "label":
+        done = set()
+        for n in pages:
+            page = work.page(n)
+            labels = _unit_label_rects(page, by_id)
+            for key, R in labels.items():
+                w = next((x for x in by_id[key] if x["keep"]), None)
+                if not w:
+                    continue
+                rgb = status_colours.get(w["status"], colour("yellow"))
+                an = page.add_highlight_annot(R + (-2, -2, 2, 2))
+                an.set_colors(stroke=tuple(rgb)); an.set_opacity(0.5); an.update()
+                unit = by_id[key][0]["unit"]
+                work.checks.append((n, R, f"check_p{n}_{_safe(unit)}.png"))
+                if key not in done:
+                    work.log.append({"page": n, "target": unit, "status_in_table": by_id[key][0]["status"],
+                                     "method": "label highlight", "status": _status_word(w["status"], status_colours)})
+                    done.add(key)
+            if labels:
+                _legend(work, page, status_colours, os.path.basename(str(table)))
+        for w in wanted:
+            if w["keep"] and _UnitKeys.canon(w["unit"]) not in done:
+                work.log.append({"target": w["unit"], "status_in_table": w["status"],
+                                 "status": "NOT found (no label with an area figure on the sheets searched)"})
+        work.save(out_pdf, check_dir, context=25)
+        return work.log
+
     # Two passes over the sheets. "calibrate" learns the drawn-area / labelled-m2 ratio from every unit on every
     # sheet; "paint" then checks each unit against it. A sheet with only a few units (e.g. a penthouse level)
     # can't calibrate itself: its own median would just be whichever polygon happened to sit nearest a label.
