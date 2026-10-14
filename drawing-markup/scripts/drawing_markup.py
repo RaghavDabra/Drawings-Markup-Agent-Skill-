@@ -688,18 +688,65 @@ def _status_word(st, sc):
 
 
 # Apartment-label matching (the reliable "follow the labelisation" method).
-# Every sheet labels each apartment with its number next to its area, e.g. "1.03+  TWO BEDROOM  78.4 m2".
-# Door/window tags (1.03-01) carry no area beside them, so requiring an area figure next to the number picks
-# out the one real apartment label and nothing else - no walls, rooms, corridors or geometry are involved.
-_AREA_UNIT_RE = re.compile(r"^(m²|m2|sqm|sq\.?m|m\^?2|㎡)\.?$", re.I)
-_AREA_JOIN_RE = re.compile(r"^\d{2,4}(?:\.\d+)?\s*(?:m²|m2|sqm|㎡)$", re.I)
-_AREA_WORDS = {"square", "metre", "metres", "meter", "meters", "sqm"}
+# Every sheet labels each apartment with its number next to its FLOOR AREA, e.g. "1.03+  TWO BEDROOM  78.4 m2".
+# The rule is deliberately strict so it marks the real apartment label and nothing else - no walls, rooms or
+# geometry are involved:
+#   * the figure must be an AREA (m2 / sqm / square metres), never a volume (m3) - storage boxes are labelled
+#     "1.08  7.5 m3  STORE" right next to a unit number, and must not be mistaken for the apartment;
+#   * the area value must be in a sane dwelling range (>= _AREA_MIN m2), which also rejects those small stores;
+#   * door / window tags (1.03-01) carry no area and are skipped;
+#   * each unit number is paired with its NEAREST area figure, so a number never grabs a neighbour's area.
+_AREA_UNIT_RE = re.compile(r"^(m²|m2|sqm|sq\.?m|m\^?2|㎡)\.?$", re.I)      # an area unit (NOT m3)
+_AREA_JOIN_RE = re.compile(r"^(\d{1,4}(?:\.\d+)?)\s*(?:m²|m2|sqm|㎡)$", re.I)  # joined form "78.4m2"
+_VOL_RE = re.compile(r"^(m³|m3|m\^?3|cu|cubic)", re.I)                     # a volume unit - always rejected
+_NUM_RE = re.compile(r"^\d{1,4}(?:\.\d+)?$")
+_AREA_MIN, _AREA_MAX = 20.0, 3000.0   # a dwelling's floor area in m2; excludes stores/wet-area scraps and dimensions
+
+
+def _is_area_unit_seq(ws, j):
+    """Do the word(s) at ws[j] spell a FLOOR-AREA unit (m2 / sqm / square metre(s) / metre square)? Never m3."""
+    u = ws[j][4].strip()
+    if _VOL_RE.match(u):
+        return False
+    if _AREA_UNIT_RE.match(u):
+        return True
+    low = u.lower()
+    nxt = ws[j + 1][4].strip().lower() if j + 1 < len(ws) else ""
+    if low in ("square", "sq", "sq.") and nxt in ("metre", "metres", "meter", "meters", "m", "m2", "m²"):
+        return True
+    if low in ("metre", "metres", "meter", "meters") and nxt == "square":
+        return True
+    return False
+
+
+def _area_anchors(ws):
+    """Every floor-area figure on the page: a list of (rect, value_m2). A figure is a number in the dwelling
+    range immediately followed by an area unit, or the joined form "78.4m2". Volumes (m3) are excluded."""
+    out = []
+    for i, wd in enumerate(ws):
+        t = wd[4].strip()
+        m = _AREA_JOIN_RE.match(t)
+        if m and _AREA_MIN <= float(m.group(1)) <= _AREA_MAX:
+            out.append((fitz.Rect(wd[:4]), float(m.group(1))))
+            continue
+        if _NUM_RE.fullmatch(t) and _AREA_MIN <= float(t) <= _AREA_MAX:
+            for j in range(i + 1, min(len(ws), i + 3)):
+                wj = ws[j]
+                if abs(wj[1] - wd[1]) > 20 or (wj[0] - wd[2]) > 40 or wj[0] < wd[0] - 5:
+                    continue
+                if _VOL_RE.match(wj[4].strip()):
+                    break
+                if _is_area_unit_seq(ws, j):
+                    out.append((fitz.Rect(wd[:4]) | fitz.Rect(wj[:4]), float(t)))
+                    break
+    return out
 
 
 def _unit_label_rects(page, by_id):
-    """Find each unit's apartment label: its number sitting beside an area figure (m2 / sqm / square metres).
-    Returns {unit_key: fitz.Rect}. The largest matching block wins if a number appears more than once."""
+    """Find each unit's apartment label: its number sitting beside its floor-area figure.
+    Returns {unit_key: fitz.Rect}. See the module comment above for the (strict) matching rule."""
     ws = page.get_text("words")
+    anchors = _area_anchors(ws)
     best = {}
     for i, wd in enumerate(ws):
         t = wd[4].strip()
@@ -708,20 +755,21 @@ def _unit_label_rects(page, by_id):
         key = _UnitKeys.canon(re.sub(r"[+*]+$", "", t))
         if key not in by_id:
             continue
-        nxt = " ".join(w[4] for w in ws[i + 1:i + 8])
-        if not _is_unit_label(t, nxt):                 # a bare dimension integer, not a unit number
-            continue
-        grp = fitz.Rect(wd[:4]); area = False
-        for j in range(i + 1, min(len(ws), i + 8)):
-            wj = ws[j]; rj = fitz.Rect(wj[:4]); tok = wj[4].strip()
-            if abs(rj.y0 - wd[1]) > 45 or rj.x0 - wd[0] > 160 or rj.x1 < wd[0] - 20:
+        if not _is_unit_label(t, " ".join(w[4] for w in ws[i + 1:i + 8])):
+            continue                                   # a bare dimension integer, not a unit number
+        wr = fitz.Rect(wd[:4]); near = None
+        for ar, _val in anchors:                       # pair with the NEAREST area figure, same line / column
+            dx = max(ar.x0 - wr.x1, wr.x0 - ar.x1, 0.0)
+            dy = max(ar.y0 - wr.y1, wr.y0 - ar.y1, 0.0)
+            if dx > 70 or dy > 45:
                 continue
-            grp |= rj
-            if _AREA_UNIT_RE.match(tok) or _AREA_JOIN_RE.match(tok) or tok.lower() in _AREA_WORDS:
-                area = True
-                if not tok.lower() in _AREA_WORDS:     # stop at the m2 symbol; keep going past a stray "square"
-                    break
-        if area and (key not in best or grp.get_area() > best[key].get_area()):
+            d = dx * dx + dy * dy
+            if near is None or d < near[0]:
+                near = (d, ar)
+        if near is None:
+            continue
+        grp = wr | near[1]
+        if key not in best or grp.get_area() > best[key].get_area():
             best[key] = grp
     return best
 
