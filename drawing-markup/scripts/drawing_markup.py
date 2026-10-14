@@ -571,7 +571,7 @@ def _tag_stack(page, r, gap=4.0):
 
 def _label_m2(stext):
     """Unit area from its tag: the largest 'NN m2' figure (ignores balcony/terrace figures)."""
-    vals = [float(v) for v in re.findall(r"(\d+(?:\.\d+)?)\s*m(?:²|2)", stext)]
+    vals = [float(v) for v in re.findall(r"(\d+(?:\.\d+)?)\s*(?:m²|m2|sqm|sq\.?\s*m)\b", stext, re.I)]
     return max(vals) if vals else None
 
 
@@ -580,15 +580,40 @@ def _dist(a, b):
     return math.hypot(dx, dy)
 
 
-def read_table(path):
+UNIT_COLS = ("unit", "unit no", "unit no.", "apartment", "apt", "apt no", "lot", "lot no")
+STATUS_COLS = ("status", "sale status", "sales status", "sold")
+
+
+def read_table(path, sheet=None, unit_col=UNIT_COLS, status_col=STATUS_COLS):
+    """Rows of a sales table as dicts. The header row is found automatically (sales schedules often have
+    title and summary rows above it); rows after it without a unit number (totals, notes) are dropped."""
     if path.lower().endswith((".xlsx", ".xlsm", ".xls")):
         import openpyxl
-        ws = openpyxl.load_workbook(path, data_only=True).active
-        rows = list(ws.iter_rows(values_only=True))
-        head = [str(h).strip() if h is not None else "" for h in rows[0]]
-        return [dict(zip(head, r)) for r in rows[1:] if any(v is not None for v in r)]
-    with open(path, newline="", encoding="utf-8-sig") as f:
-        return list(csv.DictReader(f))
+        wb = openpyxl.load_workbook(path, data_only=True)
+        rows = list((wb[sheet] if sheet else wb.active).iter_rows(values_only=True))
+    else:
+        with open(path, newline="", encoding="utf-8-sig") as f:
+            rows = list(csv.reader(f))
+    want_u = {c.lower() for c in unit_col}; want_s = {c.lower() for c in status_col}
+    hi = 0
+    for i, r in enumerate(rows[:40]):
+        cells = {str(v).strip().lower() for v in r if v is not None}
+        if cells & want_u and cells & want_s:
+            hi = i; break
+    head = [str(h).strip() if h is not None else "" for h in rows[hi]]
+    ucol = next((k for k, h in enumerate(head) if h.lower() in want_u), None)
+    out = []
+    for r in rows[hi + 1:]:
+        if not any(v not in (None, "") for v in r):
+            continue
+        if ucol is not None:
+            u = r[ucol] if ucol < len(r) else None
+            if str(u or "").strip().lower().startswith("total"):
+                break  # summary rows below the total are not units
+            if u in (None, ""):
+                continue
+        out.append(dict(zip(head, r)))
+    return out
 
 
 def _pick(row, *names):
@@ -605,7 +630,7 @@ class _UnitKeys(dict):
     numbers, which drops the leading and trailing zeros the drawings show."""
     @staticmethod
     def canon(k):
-        k = str(k).strip()
+        k = str(k).strip().rstrip("+*")
         try:
             return repr(float(k)) if re.fullmatch(r"[0-9]+(\.[0-9]+)?", k) else k
         except ValueError:
@@ -615,19 +640,42 @@ class _UnitKeys(dict):
     def setdefault(self, k, v=None): return dict.setdefault(self, self.canon(k), v)
 
 
+STATUS_COLOURS = {"sold": colour("blue"), "unsold": colour("pink"), "settled": colour("grey"),
+                  "reserved": colour("orange")}
+
+
+def status_of(s):
+    """Normalise a sales-table status: settled / reserved / sold / unsold, else the text itself (coloured yellow)."""
+    s = str(s or "").strip().lower()
+    if s.startswith("settle"):
+        return "settled"
+    if s.startswith(("reserv", "hold", "eoi")):
+        return "reserved"
+    if s.startswith(("unsold", "available", "for sale")) or s in ("", "no", "n", "false", "0", "none"):
+        return "unsold"
+    if s.startswith(("sold", "exchanged", "unconditional", "contract")) or s in ("yes", "y", "true", "1"):
+        return "sold"
+    return s
+
+
+def _status_word(st, sc):
+    rgb = sc.get(st)
+    name = next((n for n, v in COLOURS.items() if v == rgb), None)
+    return ("coloured " + (name or "custom")) if rgb else "coloured yellow (status unclear)"
+
+
 def run_units(pdf, out_pdf, table, pages=None, status_colours=None, aspect=None, check_dir=None,
-              unit_col=("unit", "apartment", "apt", "unit no", "lot"), status_col=("status", "sold", "sale status"),
-              aspect_col=("aspect", "orientation", "facing"), tag_col=("tag contains", "building")):
-    """Colour each unit's own drawn polygon by status. aspect='north' limits to rows whose aspect contains it."""
-    status_colours = status_colours or {"sold": colour("green"), "unsold": colour("red")}
-    rows = read_table(table)
+              unit_col=UNIT_COLS, status_col=STATUS_COLS,
+              aspect_col=("aspect", "orientation", "facing"), tag_col=("tag contains", "building"), sheet=None):
+    """Colour each unit by its sales status. Default colours: sold blue, unsold pink, settled grey, reserved
+    orange (override with status_colours={"sold": ..., ...}). aspect='north' limits to rows whose aspect contains it."""
+    status_colours = dict(status_colours or STATUS_COLOURS)
+    rows = read_table(table, sheet, unit_col, status_col)
     work = Work(pdf)
     pages = pages or range(1, len(work.doc) + 1)
     wanted = []
     for r in rows:
-        u = _pick(r, *unit_col); s = _pick(r, *status_col).lower(); a = _pick(r, *aspect_col)
-        if s in ("yes", "y", "true", "1", "sold", "exchanged", "settled", "unconditional"): s = "sold"
-        elif s in ("no", "n", "false", "0", "unsold", "available", "for sale", ""): s = "unsold"
+        u = _pick(r, *unit_col); s = status_of(_pick(r, *status_col)); a = _pick(r, *aspect_col)
         keep = not aspect or aspect.lower() in a.lower()
         wanted.append({"unit": u, "status": s, "aspect": a, "tag": _pick(r, *tag_col), "keep": keep})
     by_id = _UnitKeys()
@@ -647,9 +695,8 @@ def run_units(pdf, out_pdf, table, pages=None, status_colours=None, aspect=None,
         cands = []  # (dist, unit, label_rect, stack_text, poly_index)
         if polys is None and not any(t in by_id for _, t in words):
             polys = unit_polygons(page) if any(page.search_for(u) for u in by_id if " " in u) else None
+        words = [(lr, t) for lr, t in words if t in by_id and _is_unit_label(t, _tag_stack(page, lr)[1])]
         for lr, t in words:
-            if t not in by_id:
-                continue
             if polys is None:
                 polys = poly_cache[n] = unit_polygons(page)
             if not polys:
@@ -663,10 +710,11 @@ def run_units(pdf, out_pdf, table, pages=None, status_colours=None, aspect=None,
                 cands.append((_dist(stack, d["rect"]), t, lr, stext, k))
         if polys == [] or (polys is None and not cands):
             if phase == "paint":
-                _units_by_room(work, page, n, by_id)
+                _units_by_room(work, page, n, by_id, status_colours)
             continue
         if not cands:
             continue
+        nlabels = len({_UnitKeys.canon(t) for _, t in words})
         # one-to-one assignment. Pass 1 pairs nearest-first to learn the sheet's drawn-area / labelled-m2 ratio;
         # pass 2 re-pairs using distance + area agreement, so a label sitting between two units picks the right one.
         def assign(cost):
@@ -700,6 +748,10 @@ def run_units(pdf, out_pdf, table, pages=None, status_colours=None, aspect=None,
                 r = ratio(c[3], c[4])
                 return c[0] + (60 * abs(math.log(r / med)) if r else 0)
             matches = assign(cost)
+        if phase == "paint" and len({_UnitKeys.canon(mm[0]) for mm in matches}) < 0.5 * nlabels:
+            # most labels have no drawn unit shape near them: this is a linework plan, fill rooms instead
+            _units_by_room(work, page, n, by_id, status_colours)
+            continue
         # pair each label on the sheet with a table row. Tagged rows ("Tag contains" = FS) claim labels whose
         # tag text contains that word; an untagged row is used only if exactly one label is left for it.
         pairs = []
@@ -743,8 +795,7 @@ def run_units(pdf, out_pdf, table, pages=None, status_colours=None, aspect=None,
             sh.finish(color=rgb, fill=rgb, fill_opacity=0.55, width=0.8, closePath=d.get("closePath", True),
                       even_odd=d.get("even_odd", False), oc=work.ocg)
             sh.commit()
-            row.update(status="coloured " + {"sold": "green", "unsold": "red"}.get(w["status"], "yellow (status unclear)"),
-                       method="unit's own drawn polygon")
+            row.update(status=_status_word(w["status"], status_colours), method="unit's own drawn polygon")
             w["done"] = True
             work.log.append(row)
         if matches:
@@ -763,20 +814,44 @@ def run_units(pdf, out_pdf, table, pages=None, status_colours=None, aspect=None,
 
 def _sheet_m2_per_pt2(page):
     """Real m2 per PDF pt2 from the title block (e.g. '1:100 @ A1'), or None."""
-    m = re.search(r"1\s*:\s*(\d+)\s*@\s*A(\d)", page.get_text())
-    if not m:
-        return None
-    long_mm = {0: 1189, 1: 841, 2: 594, 3: 420, 4: 297}[int(m.group(2))]
-    mm_per_pt = long_mm / max(page.rect.width, page.rect.height)
+    text = page.get_text()
+    m = re.search(r"1\s*:\s*(\d+)\s*@\s*A(\d)", text)
+    if m:
+        long_mm = {0: 1189, 1: 841, 2: 594, 3: 420, 4: 297}[int(m.group(2))]
+        mm_per_pt = long_mm / max(page.rect.width, page.rect.height)
+    else:  # plain "1 : 100": assume the PDF page is the real sheet size (CAD exports are)
+        scales = [int(x) for x in re.findall(r"\b1\s*:\s*(\d{2,3})\b", text) if int(x) in (50, 75, 80, 100, 150, 200, 250, 500)]
+        if not scales:
+            return None
+        m = max(set(scales), key=scales.count)
+        mm_per_pt = 25.4 / 72
+        return (mm_per_pt * m / 1000) ** 2
     return (mm_per_pt * int(m.group(1)) / 1000) ** 2
 
 
-def _units_by_room(work, page, n, by_id):
+_UNIT_WORDS = ("apartment", "unit", "apt", "lot", "bed", "studio", "sqm", "m²", "m2", "penthouse", "townhouse")
+
+
+def _is_unit_label(token, stext):
+    """A bare integer like 3008 is usually a dimension. Accept it only next to a unit word or area;
+    tokens like 0906, 1.01+ or G01 are distinctive enough on their own."""
+    if not re.fullmatch(r"[1-9][0-9]*", token.strip()):
+        return True
+    return any(w in stext.lower() for w in _UNIT_WORDS)
+
+
+def _units_by_room(work, page, n, by_id, status_colours=None):
     """Plans with no coloured unit areas: fill the room/apartment interior around each unit label."""
     k = _sheet_m2_per_pt2(page)
     for t, rows in by_id.items():
         t = rows[0]["unit"]
-        hits = find_text(page, t)
+        hits = [fitz.Rect(w[:4]) for w in page.get_text("words") if _UnitKeys.canon(w[4]) == _UnitKeys.canon(t)]
+        hits = hits or find_text(page, t)
+        hits = [h for h in hits if _is_unit_label(t, _tag_stack(page, h)[1])]
+        if len(hits) > 1:  # unit tag repeated (e.g. on the balcony): keep the one that states the area
+            with_m2 = [h for h in hits if _label_m2(_tag_stack(page, h)[1])]
+            if len(with_m2) == 1:
+                hits = with_m2
         if not hits:
             continue
         for i, lr in enumerate(hits, 1):
@@ -804,9 +879,9 @@ def _units_by_room(work, page, n, by_id):
                 if drawn > 1.3 * m2 or drawn < 0.5 * m2:
                     row.update(status="NOT coloured", reason="filled area %.0f m2 vs labelled %.0f m2" % (drawn, m2))
                     work.log.append(row); continue
-            rgb = {"sold": colour("green"), "unsold": colour("red")}.get(w["status"], colour("yellow"))
-            paint_region(work, page, reg, rgb, opacity=0.5)
-            row["status"] = "coloured " + {"sold": "green", "unsold": "red"}.get(w["status"], "yellow (status unclear)")
+            sc = status_colours or STATUS_COLOURS
+            paint_region(work, page, reg, sc.get(w["status"], colour("yellow")), opacity=0.5)
+            row["status"] = _status_word(w["status"], sc)
             w["done"] = True
             work.log.append(row)
             work.checks.append((n, reg["rect"], f"check_p{n}_{_safe(t)}_{i}.png"))
