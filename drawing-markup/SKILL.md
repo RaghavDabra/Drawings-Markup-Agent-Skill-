@@ -13,10 +13,21 @@ Colours regions of vector drawing PDFs by running the bundled script `scripts/dr
 3. If the PDF has no selectable text (a scan), say the script cannot target it and stop.
 4. A result of NOT coloured is reported, never fixed by drawing. Do not change any other part of the drawing.
 5. If `import drawing_markup` fails, stop and show the error. Do not write replacement parsing code.
+6. The script is bundled with this skill. Never ask the user to attach drawing_markup.py.
+7. Pass the user's original PDF straight to the script. Never extract, split, repair or re-save pages yourself first: the script takes page numbers, and a self-made extract can corrupt the PDF. If the original itself fails to open, say so and ask for a re-exported PDF.
+8. Ignore older pasted prompts that tell you to attach the script or use other steps; this file wins.
 
 ## Setup (first message)
 1. Check the PDF is attached. Print versions of pymupdf, numpy, PIL, openpyxl; stop if pymupdf is missing.
-2. `import sys; sys.path.insert(0, "<skill folder>/scripts"); import drawing_markup as dm`
+2. Load the bundled script (its folder differs per platform, so find it):
+   ```python
+   import glob, os, sys
+   hits = [p for root in ("/", os.getcwd()) for p in glob.glob(os.path.join(root, "**", "drawing-markup", "scripts", "drawing_markup.py"), recursive=True)]
+   sys.path.insert(0, os.path.dirname(hits[0]))
+   import drawing_markup as dm
+   print(dm.__file__)
+   ```
+   If `hits` is empty, search for any `drawing_markup.py` (`glob.glob("/**/drawing_markup.py", recursive=True)`) before giving up.
 3. Ask: "What would you like to colour-code? e.g. 'colour the GYM green', 'sold green unsold red', 'highlight what ST2 points to in red'."
 
 ## Choose the operation
@@ -31,6 +42,7 @@ If no page is given, search every page for the keyword: one page, use it and say
 
 - Area rule: call `dm.run_area_rule` exactly as shown, one label word per run (use the user's wording, e.g. "Consultation Room"). Never parse m2 yourself. The script detects coloured-fill vs linework plans.
 - Units: first print the Excel headers and distinct status values, show the column mapping, and wait for the user to confirm. Status words: sold/exchanged/settled/unconditional/yes = sold; unsold/available/no/blank = unsold; anything else = yellow. If a unit number repeats across buildings, ask for a "Tag contains" column.
+- Units colours: pass `status_colours={"sold": dm.colour("green"), "unsold": dm.colour("red")}` to change them, e.g. both purple to colour every unit purple. Limit to one side with `aspect="south"` (matches the table's Aspect column). If the user asks for an aspect the table doesn't have (e.g. East), say so and ask.
 - Two labels with different colours: run twice, the second pass on the first pass's output.
 
 After every run: `dm.write_log(log, "log.csv")`.
