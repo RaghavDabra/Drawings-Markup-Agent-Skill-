@@ -1019,6 +1019,14 @@ def _units_by_room(work, page, n, by_id, status_colours=None):
         return
     ws = page.get_text("words")
     found = apartment_masks(page, labels, math.sqrt(k))[0]
+    # the printed scale is not always the true one (sheet resized on export): calibrate on the best-filled units
+    lab_m2 = {key: max([a[1] for a in _area_anchors(ws) if a[0].intersects(R)] or [0]) for key, R in labels.items()}
+    rs = sorted(found[key][3] / lab_m2[key] for key in found if lab_m2.get(key))
+    cal = 1.0
+    if len(rs) >= 4:
+        q = rs[int(0.75 * (len(rs) - 1))]
+        if 0.3 < q < 3 and abs(math.log(q)) > 0.12:
+            cal = q
     for key, R in labels.items():
         rows = by_id[key]; t = rows[0]["unit"]
         w = next((x for x in rows if x["keep"]), None)
@@ -1031,12 +1039,16 @@ def _units_by_room(work, page, n, by_id, status_colours=None):
             row.update(status="NOT coloured", reason="label room is open to the outside or corridor")
             work.log.append(row); continue
         rect, mask, nrooms, drawn = found[key]
+        drawn /= cal
+        if cal != 1.0:
+            row["scale_note"] = "areas calibrated x%.2f from this sheet's labels" % (1 / cal)
         if not m2 and not 20 <= drawn <= 1000:
             row.update(status="NOT coloured", reason="no area on the label and the enclosed space is %.0f m2" % drawn)
             work.log.append(row); continue
         if m2:
             row["area_check"] = "drawn %.0f m2 vs labelled %.0f m2 (%+.0f%%)" % (drawn, m2, 100 * (drawn / m2 - 1))
-            if drawn > 1.25 * m2 or drawn < 0.45 * m2:
+            lo_ok = 0.45 if cal == 1.0 else 0.6
+            if drawn > (1.25 if cal == 1.0 else 1.35) * m2 or drawn < lo_ok * m2:
                 row.update(status="NOT coloured", reason="filled area %.0f m2 vs labelled %.0f m2" % (drawn, m2))
                 work.log.append(row); continue
         paint_region(work, page, {"rect": rect, "mask": mask, "fill_ratio": 0.5}, sc.get(w["status"], colour("yellow")), opacity=0.5)
@@ -1121,6 +1133,7 @@ def _door_arcs(page, m_per_pt, rmin=0.45, rmax=1.35):
         out.append((h, ch[0], ch[-1], rad))
 
     lay = _layered(page)
+    loose = []
     for d in _drawings(page):
         if not d.get("color"):
             continue
@@ -1143,6 +1156,43 @@ def _door_arcs(page, m_per_pt, rmin=0.45, rmax=1.35):
             else:
                 test(cur); cur = list(pts)
         test(cur)
+        if len(d["items"]) == 1 and d["items"][0][0] == "l":
+            a, b = d["items"][0][1], d["items"][0][2]
+            if 0 < abs(a - b) <= 0.35 * hi:
+                loose.append((a, b))
+    # some exports write each tiny chord of a door swing as its own path: chain them end to end
+    key = lambda p: (round(p.x * 2), round(p.y * 2))
+    ends = {}
+    for i, (a, b) in enumerate(loose):
+        ends.setdefault(key(a), []).append(i); ends.setdefault(key(b), []).append(i)
+    used = set()
+    for i in range(len(loose)):
+        if i in used:
+            continue
+        used.add(i)
+        chain = list(loose[i])
+        for side in (0, 1):
+            while True:
+                tip = chain[-1] if side == 0 else chain[0]
+                nxt = [j for j in ends.get(key(tip), []) if j not in used]
+                if len(nxt) != 1:
+                    break
+                j = nxt[0]; used.add(j); a, b = loose[j]
+                far = b if key(a) == key(tip) else a
+                if side == 0:
+                    chain.append(far)
+                else:
+                    chain.insert(0, far)
+        if len(chain) >= 5:
+            # split at sharp turns, test each smooth run
+            run = chain[:2]
+            for p in chain[2:]:
+                v1 = run[-1] - run[-2]; v2 = p - run[-1]
+                if abs(v1) > 1e-6 and abs(v2) > 1e-6 and (v1.x * v2.x + v1.y * v2.y) / (abs(v1) * abs(v2)) < math.cos(math.radians(30)):
+                    test(run); run = [run[-1], p]
+                else:
+                    run.append(p)
+            test(run)
     return out
 
 
