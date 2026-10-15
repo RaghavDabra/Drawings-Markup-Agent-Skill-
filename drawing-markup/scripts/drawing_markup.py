@@ -732,7 +732,8 @@ def _area_anchors(ws):
         if _NUM_RE.fullmatch(t) and _AREA_MIN <= float(t) <= _AREA_MAX:
             for j in range(i + 1, min(len(ws), i + 3)):
                 wj = ws[j]
-                if abs(wj[1] - wd[1]) > 20 or (wj[0] - wd[2]) > 40 or wj[0] < wd[0] - 5:
+                same_line = wj[5:7] == wd[5:7]                # PDF says same text line (works on rotated sheets)
+                if not same_line and (abs(wj[1] - wd[1]) > 20 or (wj[0] - wd[2]) > 40 or wj[0] < wd[0] - 5):
                     continue
                 if _VOL_RE.match(wj[4].strip()):
                     break
@@ -983,50 +984,36 @@ def _is_unit_label(token, stext):
 
 
 def _units_by_room(work, page, n, by_id, status_colours=None):
-    """Plans with no coloured unit areas: fill the room/apartment interior around each unit label."""
+    """Linework plans (no coloured unit areas): fill each whole apartment found by the room graph below."""
+    sc = status_colours or STATUS_COLOURS
     k = _sheet_m2_per_pt2(page)
-    for t, rows in by_id.items():
-        t = rows[0]["unit"]
-        hits = [fitz.Rect(w[:4]) for w in page.get_text("words") if _UnitKeys.canon(w[4]) == _UnitKeys.canon(t)]
-        hits = hits or find_text(page, t)
-        hits = [h for h in hits if _is_unit_label(t, _tag_stack(page, h)[1])]
-        if len(hits) > 1:  # unit tag repeated (e.g. on the balcony): keep the one that states the area
-            with_m2 = [h for h in hits if _label_m2(_tag_stack(page, h)[1])]
-            if len(with_m2) == 1:
-                hits = with_m2
-        if not hits:
+    labels = _unit_label_rects(page, by_id)
+    if not labels or not k:
+        return
+    ws = page.get_text("words")
+    found = apartment_masks(page, labels, math.sqrt(k))[0]
+    for key, R in labels.items():
+        rows = by_id[key]; t = rows[0]["unit"]
+        w = next((x for x in rows if x["keep"]), None)
+        if not w:
             continue
-        for i, lr in enumerate(hits, 1):
-            stack, stext = _tag_stack(page, lr)
-            tagged = [w for w in rows if w["tag"] and w["tag"].lower() in stext.lower()]
-            plain = [w for w in rows if not w["tag"]]
-            w = tagged[0] if tagged else (plain[0] if plain else None)
-            if not w or not w["keep"]:
-                continue
-            row = {"page": n, "target": t, "label_text": stext, "status_in_table": w["status"], "aspect": w["aspect"],
-                   "found_at": _fmt(lr), "method": "room fill from label (linework plan)"}
-            if len(hits) > 1 and not tagged:
-                row.update(status="NOT coloured", reason="label appears %d times on this sheet; add a 'Tag contains' column" % len(hits))
+        m2 = max([a[1] for a in _area_anchors(ws) if a[0].intersects(R)] or [0])
+        row = {"page": n, "target": t, "status_in_table": w["status"], "found_at": _fmt(R),
+               "method": "whole apartment fill (rooms joined through doors)"}
+        if key not in found:
+            row.update(status="NOT coloured", reason="label room is open to the outside or corridor")
+            work.log.append(row); continue
+        rect, mask, nrooms, drawn = found[key]
+        if m2:
+            row["area_check"] = "drawn %.0f m2 vs labelled %.0f m2 (%+.0f%%)" % (drawn, m2, 100 * (drawn / m2 - 1))
+            if drawn > 1.25 * m2 or drawn < 0.45 * m2:
+                row.update(status="NOT coloured", reason="filled area %.0f m2 vs labelled %.0f m2" % (drawn, m2))
                 work.log.append(row); continue
-            m2 = _label_m2(stext)
-            try:
-                reg = region_at(page, (lr.tl + lr.br) / 2, target_pt2=(m2 / k if m2 and k else None),
-                                m_per_pt=(math.sqrt(k) if k else None), **ROOM)
-            except ValueError as e:
-                row.update(status="NOT coloured", reason=str(e)); work.log.append(row); continue
-            m2 = _label_m2(stext)
-            if m2 and k:
-                drawn = reg["mask"].sum() / reg["px"] ** 2 * k
-                row["area_check"] = f"{drawn / m2 - 1:+.0%} (rooms behind closed walls, e.g. ensuites, are not filled)"
-                if drawn > 1.3 * m2 or drawn < 0.5 * m2:
-                    row.update(status="NOT coloured", reason="filled area %.0f m2 vs labelled %.0f m2" % (drawn, m2))
-                    work.log.append(row); continue
-            sc = status_colours or STATUS_COLOURS
-            paint_region(work, page, reg, sc.get(w["status"], colour("yellow")), opacity=0.5)
-            row["status"] = _status_word(w["status"], sc)
-            w["done"] = True
-            work.log.append(row)
-            work.checks.append((n, reg["rect"], f"check_p{n}_{_safe(t)}_{i}.png"))
+        paint_region(work, page, {"rect": rect, "mask": mask, "fill_ratio": 0.5}, sc.get(w["status"], colour("yellow")), opacity=0.5)
+        row["status"] = _status_word(w["status"], sc)
+        w["done"] = True
+        work.log.append(row)
+        work.checks.append((n, rect, f"check_p{n}_{_safe(t)}.png"))
 
 
 def _legend(work, page, sc, source):
@@ -1042,6 +1029,398 @@ def _legend(work, page, sc, source):
     page.insert_text((x, y + 4), ("Sales status: " + source)[:48], fontsize=7, oc=work.ocg)
     for i, k in enumerate(sc):
         page.insert_text((x + 24, y + 20 + 14 * i), k.capitalize(), fontsize=8, oc=work.ocg)
+
+
+
+# ---------------------------------------------------------------- whole-apartment fill on linework plans
+# A fitout plan draws walls, not apartments. Room graph: seal the wall linework (CAD wall/door/window layers
+# when the PDF kept them, else dark linework), label every enclosed room, link the two rooms either side of
+# each door swing, grow each apartment from its label room through its own doors. A room whose doors reach two
+# apartments is the corridor/lobby and is never coloured; doorless rooms (balcony, robe) join the one
+# apartment they share walls with. Pure numpy, ~5-12 s per sheet.
+def _erode(a, r):
+    return ~_dilate(~a, r)
+
+
+def _item_pts(it, n=9):
+    if it[0] == "l":
+        return [it[1], it[2]]
+    if it[0] == "c":
+        a, b, c, e = it[1:5]
+        return [fitz.Point((1-t)**3*a.x + 3*(1-t)**2*t*b.x + 3*(1-t)*t*t*c.x + t**3*e.x,
+                           (1-t)**3*a.y + 3*(1-t)**2*t*b.y + 3*(1-t)*t*t*c.y + t**3*e.y)
+                for t in np.linspace(0, 1, n)]
+    return None
+
+
+def _circle3(p, q, r):
+    ax, ay, bx, by, cx, cy = p.x, p.y, q.x, q.y, r.x, r.y
+    d = 2 * (ax * (by - cy) + bx * (cy - ay) + cx * (ay - by))
+    if abs(d) < 1e-9:
+        return None
+    ux = ((ax*ax + ay*ay) * (by - cy) + (bx*bx + by*by) * (cy - ay) + (cx*cx + cy*cy) * (ay - by)) / d
+    uy = ((ax*ax + ay*ay) * (cx - bx) + (bx*bx + by*by) * (ax - cx) + (cx*cx + cy*cy) * (bx - ax)) / d
+    return fitz.Point(ux, uy)
+
+
+def _door_arcs(page, m_per_pt, rmin=0.45, rmax=1.35):
+    """Door swings: runs of connected strokes that trace ~a quarter circle of door-leaf radius.
+    Works whether the CAD export wrote the swing as one bezier or as many short straight segments.
+    Returns [(hinge, p_start, p_end, radius_pt)]."""
+    lo, hi = rmin / m_per_pt, rmax / m_per_pt
+    out = []
+
+    def test(ch):
+        if len(ch) < 3:
+            return
+        xs = [p.x for p in ch]; ys = [p.y for p in ch]
+        if not (0.5 * lo <= max(max(xs) - min(xs), max(ys) - min(ys)) <= 1.2 * hi):
+            return
+        h = _circle3(ch[0], ch[len(ch) // 2], ch[-1])
+        if h is None:
+            return
+        rad = abs(h - ch[0])
+        if not (lo <= rad <= hi):
+            return
+        if max(abs(abs(h - p) - rad) for p in ch) > 0.06 * rad:
+            return
+        L = sum(abs(a - b) for a, b in zip(ch, ch[1:]))
+        span = L / rad
+        if not (1.15 <= span <= 1.95):           # ~65-110 degrees: a door swing, not a full/half circle
+            return
+        out.append((h, ch[0], ch[-1], rad))
+
+    lay = _layered(page)
+    for d in _drawings(page):
+        if not d.get("color"):
+            continue
+        if lay and not _DOOR_LAYER_RE.match(_short_layer(d)):
+            continue
+        cur = []
+        for it in d["items"]:
+            pts = _item_pts(it)
+            if pts is None:
+                test(cur); cur = []; continue
+            if cur and abs(pts[0] - cur[-1]) <= 0.3:
+                # split at a sharp turn (leaf line meeting the arc) so each piece is tested on its own
+                v1 = cur[-1] - cur[-2] if len(cur) > 1 else None
+                v2 = pts[1] - pts[0]
+                if v1 is not None and abs(v1) > 1e-6 and abs(v2) > 1e-6:
+                    cosang = (v1.x * v2.x + v1.y * v2.y) / (abs(v1) * abs(v2))
+                    if cosang < math.cos(math.radians(30)):
+                        test(cur); cur = list(pts); continue
+                cur.extend(pts[1:])
+            else:
+                test(cur); cur = list(pts)
+        test(cur)
+    return out
+
+
+def _label_cells(free):
+    """Connected components (4-connectivity) of a boolean image, numpy + run-length union-find."""
+    H, W = free.shape
+    pad = np.zeros((H, W + 2), np.int8)
+    pad[:, 1:-1] = free
+    dd = np.diff(pad, axis=1)
+    sr, sc = np.nonzero(dd == 1)
+    er, ec = np.nonzero(dd == -1)
+    n = len(sr)
+    parent = np.arange(n)
+
+    def find(i):
+        while parent[i] != i:
+            parent[i] = parent[parent[i]]
+            i = parent[i]
+        return i
+
+    row_start = np.searchsorted(sr, np.arange(H + 1))
+    for y in range(1, H):
+        a0, a1 = row_start[y - 1], row_start[y]
+        b0, b1 = row_start[y], row_start[y + 1]
+        i, j = a0, b0
+        while i < a1 and j < b1:
+            if sc[i] < ec[j] and sc[j] < ec[i]:
+                ri, rj = find(i), find(j)
+                if ri != rj:
+                    parent[max(ri, rj)] = min(ri, rj)
+            if ec[i] < ec[j]:
+                i += 1
+            else:
+                j += 1
+    roots = np.array([find(i) for i in range(n)])
+    uniq, lab = np.unique(roots, return_inverse=True)
+    img = np.zeros((H, W), np.int32)
+    for k in range(n):
+        img[sr[k], sc[k]:ec[k]] = lab[k] + 1
+    return img, len(uniq)
+
+
+def _nearest_open(lab, x, y, rad):
+    H, W = lab.shape
+    x, y = int(round(x)), int(round(y))
+    if 0 <= x < W and 0 <= y < H and lab[y, x] > 0:
+        return lab[y, x]
+    y0, y1, x0, x1 = max(0, y - rad), min(H, y + rad + 1), max(0, x - rad), min(W, x + rad + 1)
+    sub = lab[y0:y1, x0:x1]
+    ys, xs = np.nonzero(sub)
+    if len(xs) == 0:
+        return 0
+    k = np.argmin((xs + x0 - x) ** 2 + (ys + y0 - y) ** 2)
+    return sub[ys[k], xs[k]]
+
+
+def apartment_masks(page, labels, m_per_pt, PX=1.5, G=6):
+    """labels: {unit_key: label rect (pt)}. Returns ({unit_key: bool mask full page}, info)."""
+    wall = _wall_mask_layers(page, PX) if _layered(page) else _wall_mask(page, PX)
+    wc = _erode(_dilate(wall, G), G)
+    lab, n = _label_cells(~wc)
+    H, W = lab.shape
+    area = np.bincount(lab.ravel(), minlength=n + 1)
+    border = set(np.unique(np.concatenate([lab[0], lab[-1], lab[:, 0], lab[:, -1]]))) - {0}
+    m2px = (m_per_pt / PX) ** 2
+    bg = set(border) | {c for c in range(1, n + 1) if area[c] * m2px > 1500}
+    P = lambda pt: ((pt.x - page.rect.x0) * PX, (pt.y - page.rect.y0) * PX)
+    cell = lambda pt: _nearest_open(lab, *P(pt), int(0.4 / m_per_pt * PX))
+    # door links
+    adj = {}
+    for h, a, e, r in _door_arcs(page, m_per_pt):
+        # leaf = the radius drawn as a line; opening = the other radius (mostly open pixels)
+        def openness(q):
+            k = 0
+            for t in np.linspace(0.2, 0.8, 7):
+                x, y = P(h + (q - h) * t)
+                xi, yi = int(x), int(y)
+                k += 0 <= xi < W and 0 <= yi < H and not wall[yi, xi]
+            return k
+        b = a if openness(a) >= openness(e) else e
+        tip = e if b is a else a
+        mid = (a + e) / 2
+        bis = mid - h; bis = bis / max(abs(bis), 1e-6)
+        r1 = cell(h + bis * (r + 0.25 / m_per_pt))            # room the door swings into
+        hb = (h + b) / 2
+        away = hb - (h + tip) / 2; away = away / max(abs(away), 1e-6)   # from leaf side across the wall line
+        nrm = fitz.Point(-(b - h).y, (b - h).x); nrm = nrm / max(abs(nrm), 1e-6)
+        if nrm.x * (tip - h).x + nrm.y * (tip - h).y > 0:
+            nrm = -nrm
+        r2 = cell(hb + nrm * (0.3 / m_per_pt))                 # room on the other side of the doorway
+        if r1 and r2 and r1 != r2 and r1 not in bg and r2 not in bg:
+            adj.setdefault(r1, set()).add(r2); adj.setdefault(r2, set()).add(r1)
+    seeds = {}
+    for key, R in labels.items():
+        c = cell((R.tl + R.br) / 2)
+        if c and c not in bg:
+            seeds[key] = c
+    seed_cells = set(seeds.values())
+    common = set()
+    for _ in range(6):
+        dist = {}
+        for key, s in seeds.items():
+            d = {s: 0}; q = [s]
+            while q:
+                u = q.pop(0)
+                if u in common:
+                    continue
+                for v in adj.get(u, ()):
+                    if v not in d and v not in bg and (v not in seed_cells or v == s):
+                        d[v] = d[u] + 1; q.append(v)
+            dist[key] = d
+        owner = {}
+        allc = set().union(*[set(d) for d in dist.values()]) if dist else set()
+        for c in allc:
+            if c in common:
+                continue
+            ds = sorted((dist[k][c], k) for k in dist if c in dist[k])
+            if len(ds) == 1 or ds[0][0] < ds[1][0]:
+                owner[c] = ds[0][1]
+        new = set()
+        for c in allc:
+            if c in seed_cells or c in common:
+                continue
+            ks = {owner[v] for v in adj.get(c, ()) if v in owner}
+            if c in owner:
+                ks.add(owner[c])
+            if len(ks) >= 2:
+                new.add(c)
+        if not new:
+            break
+        common |= new
+    # adopt doorless rooms (balcony behind a slider, robes, a bedroom whose door wasn't recognised).
+    # Unowned rooms are grouped with the unowned rooms they share a wall with; a group is adopted only if it
+    # shares walls with exactly ONE apartment and never with the lobby. Stairs and lift shafts sit against the
+    # lobby, so their whole group is refused. The wall test reaches across a partition (~0.1 m) but not
+    # comfortably across a party wall.
+    wt = int(0.22 / m_per_pt * PX) + 1
+    cand = [c for c in range(1, n + 1) if c not in owner and c not in bg and c not in common
+            and area[c] * m2px >= 0.3]
+    touch = {}
+    for c in cand:
+        ys, xs = np.nonzero(lab == c)
+        y0, y1, x0, x1 = max(0, ys.min() - wt), min(H, ys.max() + wt + 1), max(0, xs.min() - wt), min(W, xs.max() + wt + 1)
+        sub = lab[y0:y1, x0:x1]
+        ring = _dilate(sub == c, wt) & (sub != c) & (sub > 0)
+        touch[c] = {t for t in np.unique(sub[ring]).tolist() if t != c and t not in bg and area[t] * m2px >= 0.3}
+    par = {c: c for c in cand}
+    def f(c):
+        while par[c] != c:
+            par[c] = par[par[c]]; c = par[c]
+        return c
+    for c in cand:
+        for t in touch[c]:
+            if t in par:
+                par[f(c)] = f(t)
+    groups = {}
+    for c in cand:
+        groups.setdefault(f(c), []).append(c)
+    for g in groups.values():
+        ga = sum(area[c] for c in g) * m2px
+        nb = set().union(*[touch[c] for c in g]) - set(g)
+        if ga > 80 or nb & common:
+            continue
+        ks = {owner.get(t) for t in nb} - {None}
+        if len(ks) == 1 and all(t in owner for t in nb):
+            k = ks.pop()
+            for c in g:
+                owner[c] = k
+    small = 6.0                          # enclosed pockets up to this size (joinery, islands) count as the unit's
+    big_free = [c for c in range(1, n + 1) if c not in owner and c not in bg and area[c] * m2px >= small]
+    r = int(0.3 / m_per_pt * PX) + 1
+    masks = {}
+    for key in seeds:
+        cs = [c for c, k in owner.items() if k == key]
+        m = np.isin(lab, cs)
+        others = np.isin(lab, [c for c, k in owner.items() if k != key] + list(common) + big_free)
+        mm = _erode(_dilate(m, r), r) & ~others          # take in the unit's own internal walls
+        ys, xs = np.nonzero(mm)
+        if len(xs) == 0:
+            continue
+        y0, y1, x0, x1 = ys.min(), ys.max() + 1, xs.min(), xs.max() + 1
+        sub = mm[y0:y1, x0:x1]
+        im = Image.fromarray(np.where(np.pad(sub, 1), 0, 255).astype(np.uint8))
+        ImageDraw.floodfill(im, (0, 0), 64)
+        enclosed = (np.array(im)[1:-1, 1:-1] != 64) & ~sub
+        hl, hn = _label_cells(enclosed)
+        ha = np.bincount(hl.ravel(), minlength=hn + 1) * m2px
+        keep = ha < small; keep[0] = False
+        full = np.zeros_like(mm)
+        full[y0:y1, x0:x1] = sub | keep[hl]
+        masks[key] = (full & ~others, len(cs), float(m.sum()) * m2px)
+    # a pixel claimed by two units (shared wall) goes to neither
+    if masks:
+        cnt = sum(v[0].astype(np.uint8) for v in masks.values())
+    out = {}
+    for key, (full, nc, a) in masks.items():
+        full &= cnt == 1
+        ys, xs = np.nonzero(full)
+        if len(xs) == 0:
+            continue
+        y0, y1, x0, x1 = ys.min(), ys.max() + 1, xs.min(), xs.max() + 1
+        out[key] = (fitz.Rect(x0 / PX, y0 / PX, x1 / PX, y1 / PX) + (page.rect.x0, page.rect.y0, page.rect.x0, page.rect.y0),
+                    full[y0:y1, x0:x1], nc, a)
+    return out, {"cells": n, "doors": sum(len(v) for v in adj.values()) // 2, "common": len(common)}
+
+
+def _dash_lines(page, min_gaps=15, min_span=300, dot=3.0, dot_frac=0.3):
+    """Axis-aligned lines drawn as dash-dot runs of separate short strokes: grid lines, centre lines,
+    hidden/overhead joinery. They are not walls, but sealing small gaps would turn them into walls that
+    slice rooms apart. Returns {("h"|"v", coord)}. Facade glazing lines (regular long pieces) don't match."""
+    import collections
+    H = collections.defaultdict(list); V = collections.defaultdict(list)
+    for d in _drawings(page):
+        for it in d["items"]:
+            if it[0] != "l":
+                continue
+            a, b = it[1], it[2]
+            if abs(a.y - b.y) < 0.05 and abs(a.x - b.x) > 0.05:
+                H[round(a.y, 1)].append((min(a.x, b.x), max(a.x, b.x)))
+            elif abs(a.x - b.x) < 0.05 and abs(a.y - b.y) > 0.05:
+                V[round(a.x, 1)].append((min(a.y, b.y), max(a.y, b.y)))
+    out = set()
+    for tag, D in (("h", H), ("v", V)):
+        for c, segs in D.items():
+            if len(segs) < min_gaps:
+                continue
+            segs.sort()
+            span = segs[-1][1] - segs[0][0]
+            gaps = sum(1 for p, q in zip(segs, segs[1:]) if q[0] - p[1] > 0.3)
+            dots = sum(1 for s in segs if s[1] - s[0] < dot)
+            if span >= min_span and gaps >= min_gaps and dots >= dot_frac * len(segs):
+                out.add((tag, c))
+    return out
+
+
+def _wall_mask(page, PX, max_grey=0.45):
+    """Dark vector linework as a boolean image, minus dash-dot lines (grid, centre and hidden lines)."""
+    skip = _dash_lines(page)
+    pr = page.rect
+    W, Hh = int(pr.width * PX) + 1, int(pr.height * PX) + 1
+    im = Image.new("L", (W, Hh), 0)
+    dr = ImageDraw.Draw(im)
+    tx = lambda p: ((p.x - pr.x0) * PX, (p.y - pr.y0) * PX)
+    for st, fi, w0, items in _dark_items(page, max_grey):
+        w = max(1, int(round(w0 * PX)))
+        for it in items:
+            if it[0] == "l":
+                a, b = it[1], it[2]
+                if abs(a - b) < 60 and ((abs(a.y - b.y) < 0.05 and ("h", round(a.y, 1)) in skip) or
+                                        (abs(a.x - b.x) < 0.05 and ("v", round(a.x, 1)) in skip)):
+                    continue
+                pts = [tx(a), tx(b)]
+            elif it[0] == "c":
+                pts = [tx(q) for q in _item_pts(it)]
+            elif it[0] == "re":
+                r = fitz.Rect(it[1]); pts = [tx(r.tl), tx(r.tr), tx(r.br), tx(r.bl), tx(r.tl)]
+            elif it[0] == "qu":
+                q = it[1]; pts = [tx(q.ul), tx(q.ur), tx(q.lr), tx(q.ll), tx(q.ul)]
+            else:
+                continue
+            if fi and len(pts) > 2:
+                dr.polygon(pts, fill=255)
+            dr.line(pts, fill=255, width=w)
+    return np.array(im)[: int(pr.height * PX) + 1, : int(pr.width * PX) + 1] > 0
+
+
+_WALL_LAYER_RE = re.compile(r"^(A-?WALL|I-WALL|WALL-|A-?DOOR|A-?WIND|A-?GLAZ|A-?CURT|A-?STRUCT|S-COL|A-?COL|A-?EGRESS)", re.I)
+_DOOR_LAYER_RE = re.compile(r"^A-?DOOR", re.I)
+
+
+def _short_layer(d):
+    return re.split(r"[$|]", d.get("layer") or "")[-1].strip()
+
+
+def _layered(page):
+    """True if the PDF kept the architect's CAD layers and they include walls."""
+    k = sum(1 for d in _drawings(page) if _WALL_LAYER_RE.match(_short_layer(d)))
+    return k >= 200
+
+
+def _wall_mask_layers(page, PX):
+    """Walls, doors, windows, columns and stair/lift cores from their CAD layers; furniture, fixtures,
+    joinery, dimensions, grid and symbols are left out whatever colour they are drawn in."""
+    pr = page.rect
+    W, Hh = int(pr.width * PX) + 1, int(pr.height * PX) + 1
+    im = Image.new("L", (W, Hh), 0)
+    dr = ImageDraw.Draw(im)
+    tx = lambda p: ((p.x - pr.x0) * PX, (p.y - pr.y0) * PX)
+    for d in _drawings(page):
+        if not _WALL_LAYER_RE.match(_short_layer(d)):
+            continue
+        w = max(1, int(round((d.get("width") or 0) * PX)))
+        fi = d.get("fill") is not None
+        for it in d["items"]:
+            if it[0] == "l":
+                pts = [tx(it[1]), tx(it[2])]
+            elif it[0] == "c":
+                pts = [tx(q) for q in _item_pts(it)]
+            elif it[0] == "re":
+                r = fitz.Rect(it[1]); pts = [tx(r.tl), tx(r.tr), tx(r.br), tx(r.bl), tx(r.tl)]
+            elif it[0] == "qu":
+                q = it[1]; pts = [tx(q.ul), tx(q.ur), tx(q.lr), tx(q.ll), tx(q.ul)]
+            else:
+                continue
+            if fi and len(pts) > 2:
+                dr.polygon(pts, fill=255)
+            dr.line(pts, fill=255, width=w)
+    return np.array(im) > 0
 
 
 # ---------------------------------------------------------------- helpers / CLI
