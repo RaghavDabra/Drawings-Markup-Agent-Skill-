@@ -752,6 +752,29 @@ def _area_anchors(ws):
 
 
 _UNIT_PREFIX = {"UNIT", "APARTMENT", "APT", "APT.", "LOT", "TOWNHOUSE", "VILLA", "RESIDENCE", "DWELLING", "SHOP"}
+_TYPE_CODE_RE = re.compile(r"[0-9]{0,2}[A-Za-z]{1,3}[0-9]{0,2}([.\-][0-9A-Za-z]{1,3})?")   # apartment type: 2U.01, 3B, B2-1
+
+
+def _tag_head(ws, i):
+    """Index of the UNIT word heading the tag that unit number ws[i] belongs to, and whether the tag is a
+    stack of floors, else (None, False). Accepts 'UNIT 4', a type code between them ('UNIT 2U.01' over '507')
+    and a typical-floor tag listing one number per floor ('UNIT 2A.01' over '909 1009 1109 ... 1509').
+    Each step back must touch the word before it, so a tag never reaches into unrelated text."""
+    def touch(a, b):
+        return fitz.Rect(a[:4]).intersects(fitz.Rect(b[:4]) + (-20, -20, 20, 20))
+    def prefix(w):
+        return w[4].strip().upper().rstrip(":") in _UNIT_PREFIX
+    j = i - 1
+    while j >= 0 and re.fullmatch(r"\d{2,5}", ws[j][4].strip()) and touch(ws[j], ws[j + 1]):
+        j -= 1                                         # earlier floors' numbers in the same stacked tag
+    stacked = j < i - 1 or (i + 1 < len(ws) and re.fullmatch(r"\d{2,5}", ws[i + 1][4].strip()) is not None
+                             and touch(ws[i], ws[i + 1]))
+    if j >= 0 and prefix(ws[j]) and (ws[j][5:7] == ws[j + 1][5:7] or touch(ws[j], ws[j + 1])):
+        return j, stacked
+    if (j >= 1 and prefix(ws[j - 1]) and _TYPE_CODE_RE.fullmatch(ws[j][4].strip())
+            and touch(ws[j - 1], ws[j]) and touch(ws[j], ws[j + 1])):
+        return j - 1, stacked
+    return None, False
 
 
 def _unit_label_rects(page, by_id):
@@ -767,9 +790,8 @@ def _unit_label_rects(page, by_id):
         key = by_id._key(re.sub(r"[+*]+$", "", t)) if isinstance(by_id, _UnitKeys) else _UnitKeys.canon(re.sub(r"[+*]+$", "", t))
         if key not in by_id:
             continue
-        prev = ws[i - 1] if i else None
-        named = prev is not None and prev[4].strip().upper().rstrip(":") in _UNIT_PREFIX and (
-            prev[5:7] == wd[5:7] or fitz.Rect(prev[:4]).intersects(fitz.Rect(wd[:4]) + (-20, -20, 20, 20)))
+        head, stacked = _tag_head(ws, i)
+        named = head is not None
         if re.fullmatch(r"\d{1,2}(\.\d)?", t) and not named:
             continue                                   # "6" / "4.0" alone is a star rating or EER, not unit 6 / 4
         if not named and not _is_unit_label(t, " ".join(w[4] for w in ws[i + 1:i + 8])):
@@ -786,7 +808,10 @@ def _unit_label_rects(page, by_id):
         if near is None:
             if not named:
                 continue
-            grp = wr | fitz.Rect(prev[:4])             # "UNIT 4" with no area figure (DA / sketch plans)
+            grp = wr                                   # "UNIT 4" / "UNIT 2U.01 507" with no area figure
+            if not stacked:                            # a stacked tag is shared by floors: mark only this number
+                for w in ws[head:i]:
+                    grp |= fitz.Rect(w[:4])
             if key not in best:
                 best[key] = grp
             continue
@@ -856,7 +881,7 @@ def run_units(pdf, out_pdf, table, pages=None, status_colours=None, aspect=None,
                 continue
             if w["keep"] and _UnitKeys.canon(w["unit"]) not in done:
                 work.log.append({"target": w["unit"], "status_in_table": w["status"],
-                                 "status": "NOT found (no label with an area figure on the sheets searched)"})
+                                 "status": "NOT found (no unit label - number with its m2 or UNIT tag - on the sheets searched)"})
         work.save(out_pdf, check_dir, context=25)
         return work.log
 
