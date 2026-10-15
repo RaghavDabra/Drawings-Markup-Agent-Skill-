@@ -743,6 +743,9 @@ def _area_anchors(ws):
     return out
 
 
+_UNIT_PREFIX = {"UNIT", "APARTMENT", "APT", "APT.", "LOT", "TOWNHOUSE", "VILLA", "RESIDENCE", "DWELLING", "SHOP"}
+
+
 def _unit_label_rects(page, by_id):
     """Find each unit's apartment label: its number sitting beside its floor-area figure.
     Returns {unit_key: fitz.Rect}. See the module comment above for the (strict) matching rule."""
@@ -756,7 +759,11 @@ def _unit_label_rects(page, by_id):
         key = _UnitKeys.canon(re.sub(r"[+*]+$", "", t))
         if key not in by_id:
             continue
-        if not _is_unit_label(t, " ".join(w[4] for w in ws[i + 1:i + 8])):
+        prev = ws[i - 1] if i else None
+        named = prev is not None and prev[4].strip().upper().rstrip(":") in _UNIT_PREFIX and prev[5:7] == wd[5:7]
+        if re.fullmatch(r"\d{1,2}(\.\d)?", t) and not named:
+            continue                                   # "6" / "4.0" alone is a star rating or EER, not unit 6 / 4
+        if not named and not _is_unit_label(t, " ".join(w[4] for w in ws[i + 1:i + 8])):
             continue                                   # a bare dimension integer, not a unit number
         wr = fitz.Rect(wd[:4]); near = None
         for ar, _val in anchors:                       # pair with the NEAREST area figure, same line / column
@@ -768,6 +775,11 @@ def _unit_label_rects(page, by_id):
             if near is None or d < near[0]:
                 near = (d, ar)
         if near is None:
+            if not named:
+                continue
+            grp = wr | fitz.Rect(prev[:4])             # "UNIT 4" with no area figure (DA / sketch plans)
+            if key not in best:
+                best[key] = grp
             continue
         grp = wr | near[1]
         if key not in best or grp.get_area() > best[key].get_area():
@@ -783,7 +795,9 @@ def run_units(pdf, out_pdf, table, pages=None, status_colours=None, aspect=None,
     orange (override with status_colours={"sold": ..., ...}). aspect='north' limits to rows whose aspect contains it.
     style="label" (default) highlights each apartment's number+area label in its status colour - reliable on any
     drawing and never touches corridors or rooms. style="fill" shades each unit's drawn area (works only where the
-    plan draws each unit as one fill polygon)."""
+    plan draws each unit as one fill polygon). style="rooms" fills each whole unit on linework plans (walls only:
+    fitout, DA sets) by joining rooms through doors, and highlights its label too."""
+    only_listed = status_colours is not None               # caller's own colour list: other statuses stay uncoloured
     status_colours = dict(status_colours or STATUS_COLOURS)
     rows = read_table(table, sheet, unit_col, status_col)
     work = Work(pdf)
@@ -797,6 +811,15 @@ def run_units(pdf, out_pdf, table, pages=None, status_colours=None, aspect=None,
     for w in wanted:
         by_id.setdefault(w["unit"], []).append(w)
 
+    if style == "rooms":
+        # linework plans (fitout / DA sets): fill each whole unit through its doors, and highlight its label too
+        for n in pages:
+            page = work.page(n)
+            _units_by_room(work, page, n, by_id, status_colours if only_listed else None)
+        log_fill = work.log; work.log = []
+        style = "label"
+    else:
+        log_fill = []
     if style == "label":
         done = set()
         for n in pages:
@@ -804,7 +827,7 @@ def run_units(pdf, out_pdf, table, pages=None, status_colours=None, aspect=None,
             labels = _unit_label_rects(page, by_id)
             for key, R in labels.items():
                 w = next((x for x in by_id[key] if x["keep"]), None)
-                if not w:
+                if not w or (only_listed and w["status"] not in status_colours):
                     continue
                 rgb = status_colours.get(w["status"], colour("yellow"))
                 an = page.add_highlight_annot(R + (-2, -2, 2, 2))
@@ -817,7 +840,11 @@ def run_units(pdf, out_pdf, table, pages=None, status_colours=None, aspect=None,
                     done.add(key)
             if labels:
                 _legend(work, page, status_colours, os.path.basename(str(table)))
+        work.log = log_fill + work.log
         for w in wanted:
+            if only_listed and w["status"] not in status_colours:
+                work.log.append({"target": w["unit"], "status_in_table": w["status"], "status": "left uncoloured (status not in the colour list)"})
+                continue
             if w["keep"] and _UnitKeys.canon(w["unit"]) not in done:
                 work.log.append({"target": w["unit"], "status_in_table": w["status"],
                                  "status": "NOT found (no label with an area figure on the sheets searched)"})
@@ -995,8 +1022,8 @@ def _units_by_room(work, page, n, by_id, status_colours=None):
     for key, R in labels.items():
         rows = by_id[key]; t = rows[0]["unit"]
         w = next((x for x in rows if x["keep"]), None)
-        if not w:
-            continue
+        if not w or (status_colours and w["status"] not in sc):
+            continue                                   # status left out of status_colours = leave uncoloured
         m2 = max([a[1] for a in _area_anchors(ws) if a[0].intersects(R)] or [0])
         row = {"page": n, "target": t, "status_in_table": w["status"], "found_at": _fmt(R),
                "method": "whole apartment fill (rooms joined through doors)"}
@@ -1004,6 +1031,9 @@ def _units_by_room(work, page, n, by_id, status_colours=None):
             row.update(status="NOT coloured", reason="label room is open to the outside or corridor")
             work.log.append(row); continue
         rect, mask, nrooms, drawn = found[key]
+        if not m2 and not 20 <= drawn <= 1000:
+            row.update(status="NOT coloured", reason="no area on the label and the enclosed space is %.0f m2" % drawn)
+            work.log.append(row); continue
         if m2:
             row["area_check"] = "drawn %.0f m2 vs labelled %.0f m2 (%+.0f%%)" % (drawn, m2, 100 * (drawn / m2 - 1))
             if drawn > 1.25 * m2 or drawn < 0.45 * m2:
@@ -1179,6 +1209,12 @@ def apartment_masks(page, labels, m_per_pt, PX=1.5, G=6):
     border = set(np.unique(np.concatenate([lab[0], lab[-1], lab[:, 0], lab[:, -1]]))) - {0}
     m2px = (m_per_pt / PX) ** 2
     bg = set(border) | {c for c in range(1, n + 1) if area[c] * m2px > 1500}
+    # the space around the building inside the sheet frame: a cell spanning most of the sheet is outside, not a room
+    yy, xx = np.nonzero(lab)
+    ll = lab[yy, xx]
+    x0s = np.full(n + 1, W); x1s = np.zeros(n + 1, int); y0s = np.full(n + 1, H); y1s = np.zeros(n + 1, int)
+    np.minimum.at(x0s, ll, xx); np.maximum.at(x1s, ll, xx); np.minimum.at(y0s, ll, yy); np.maximum.at(y1s, ll, yy)
+    bg |= {c for c in range(1, n + 1) if x1s[c] - x0s[c] > 0.6 * W or y1s[c] - y0s[c] > 0.6 * H}
     P = lambda pt: ((pt.x - page.rect.x0) * PX, (pt.y - page.rect.y0) * PX)
     cell = lambda pt: _nearest_open(lab, *P(pt), int(0.4 / m_per_pt * PX))
     # door links
