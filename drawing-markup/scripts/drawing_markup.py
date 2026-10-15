@@ -658,8 +658,16 @@ class _UnitKeys(dict):
             return repr(float(k)) if re.fullmatch(r"[0-9]+(\.[0-9]+)?", k) else k
         except ValueError:
             return k
-    def __contains__(self, k): return dict.__contains__(self, self.canon(k))
-    def __getitem__(self, k): return dict.__getitem__(self, self.canon(k))
+    def _key(self, k):
+        """Exact unit first; else a drawing code with a building prefix, T1.0501 -> 501, when the table
+        has no such code itself (two towers both using 0501 then need a 'Tag contains' column)."""
+        c = self.canon(k)
+        if dict.__contains__(self, c):
+            return c
+        m = re.fullmatch(r"[A-Za-z]+[0-9]*[.\-]([0-9]+)", str(k).strip().rstrip("+*"))
+        return self.canon(m.group(1)) if m else c
+    def __contains__(self, k): return dict.__contains__(self, self._key(k))
+    def __getitem__(self, k): return dict.__getitem__(self, self._key(k))
     def setdefault(self, k, v=None): return dict.setdefault(self, self.canon(k), v)
 
 
@@ -756,11 +764,12 @@ def _unit_label_rects(page, by_id):
         t = wd[4].strip()
         if re.search(r"-\d", t):                       # door / window tag like 1.03-01
             continue
-        key = _UnitKeys.canon(re.sub(r"[+*]+$", "", t))
+        key = by_id._key(re.sub(r"[+*]+$", "", t)) if isinstance(by_id, _UnitKeys) else _UnitKeys.canon(re.sub(r"[+*]+$", "", t))
         if key not in by_id:
             continue
         prev = ws[i - 1] if i else None
-        named = prev is not None and prev[4].strip().upper().rstrip(":") in _UNIT_PREFIX and prev[5:7] == wd[5:7]
+        named = prev is not None and prev[4].strip().upper().rstrip(":") in _UNIT_PREFIX and (
+            prev[5:7] == wd[5:7] or fitz.Rect(prev[:4]).intersects(fitz.Rect(wd[:4]) + (-20, -20, 20, 20)))
         if re.fullmatch(r"\d{1,2}(\.\d)?", t) and not named:
             continue                                   # "6" / "4.0" alone is a star rating or EER, not unit 6 / 4
         if not named and not _is_unit_label(t, " ".join(w[4] for w in ws[i + 1:i + 8])):
