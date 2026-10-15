@@ -571,6 +571,7 @@ def _tag_stack(page, r, gap=4.0):
     lines = _BLOCKS[key]
     box, txt = fitz.Rect(r), []
     vertical = r.height > 1.5 * r.width
+    sideways = r.height > r.width                  # a short tag ("505") on a rotated sheet: too square to tell
     own = [t for lr, t in lines if (lr & box).get_area() > 0.5 * min(lr.get_area(), box.get_area())]
     shape = re.sub(r"\d", "9", own[0]) if own else None
     grown = True
@@ -583,10 +584,12 @@ def _tag_stack(page, r, gap=4.0):
             cx, cy = (lr.x0 + lr.x1) / 2, (lr.y0 + lr.y1) / 2
             if re.sub(r"\d", "9", t) == shape:
                 continue  # another unit's label: not part of this tag
-            if vertical:  # text rotated 90 degrees: lines sit side by side
-                near = box.y0 - 6 <= cy <= box.y1 + 6 and (-2 <= lr.x0 - box.x1 <= gap or -2 <= box.x0 - lr.x1 <= gap)
+            side = box.y0 - 6 <= cy <= box.y1 + 6 and (-2 <= lr.x0 - box.x1 <= gap or -2 <= box.x0 - lr.x1 <= gap)
+            stack = box.x0 - 6 <= cx <= box.x1 + 6 and (-2 <= lr.y0 - box.y1 <= gap or -2 <= box.y0 - lr.y1 <= gap)
+            if vertical or (sideways and page.rotation in (90, 270)):  # text rotated 90 degrees: lines sit side by side
+                near = side
             else:
-                near = box.x0 - 6 <= cx <= box.x1 + 6 and (-2 <= lr.y0 - box.y1 <= gap or -2 <= box.y0 - lr.y1 <= gap)
+                near = stack
             if near:
                 box |= lr; txt.append(t); grown = True
     return box, " | ".join(txt)
@@ -767,9 +770,12 @@ def _unit_label_rects(page, by_id):
         key = by_id._key(re.sub(r"[+*]+$", "", t)) if isinstance(by_id, _UnitKeys) else _UnitKeys.canon(re.sub(r"[+*]+$", "", t))
         if key not in by_id:
             continue
-        prev = ws[i - 1] if i else None
-        named = prev is not None and prev[4].strip().upper().rstrip(":") in _UNIT_PREFIX and (
-            prev[5:7] == wd[5:7] or fitz.Rect(prev[:4]).intersects(fitz.Rect(wd[:4]) + (-20, -20, 20, 20)))
+        prev = None                                    # "UNIT 501", "APARTMENT / T1.0501" or "UNIT 2E.01 / 505"
+        for j in (i - 1, i - 2):
+            if j >= 0 and ws[j][4].strip().upper().rstrip(":") in _UNIT_PREFIX and (
+                    ws[j][5:7] == wd[5:7] or fitz.Rect(ws[j][:4]).intersects(fitz.Rect(wd[:4]) + (-20, -20, 20, 20))):
+                prev = ws[j]; break
+        named = prev is not None
         if re.fullmatch(r"\d{1,2}(\.\d)?", t) and not named:
             continue                                   # "6" / "4.0" alone is a star rating or EER, not unit 6 / 4
         if not named and not _is_unit_label(t, " ".join(w[4] for w in ws[i + 1:i + 8])):
