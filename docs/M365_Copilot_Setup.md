@@ -52,7 +52,7 @@ Configure and look for a **Skills** section.
 ## Test plan (run before sharing, and after every new zip)
 | Test | Send | Expect |
 |---|---|---|
-| Runtime | `run: import pymupdf, numpy, PIL, openpyxl; print(pymupdf.__version__)` | a version number. If it fails, the platform cannot run the skill |
+| Runtime | `check setup` | four version numbers and the script's path. An error means the platform cannot run the skill: send the exact message |
 | Trigger, no words | Prospect St PDF + Excel, no text | no question asked; "31 sheets, 64 units ... colouring now"; 60 units coloured (32 pink, 22 grey, 6 blue); 1701, 1702, Office, Retail NOT found |
 | Trigger, casual words | same files + "can u do this" | the same as above, the skill loaded |
 | Fill | Franklin PDF + Excel + "fill the apartments" | whole apartments filled, corridors and lifts untouched |
@@ -82,5 +82,5 @@ The zip is valid (SKILL.md at the top, only .md/.py files, depth 2, under 100 KB
    fails, create a fresh agent (Route A steps) and add the zip there.
 
 **The agent runs but says a module is missing.** Skill scripts run in a sandbox that cannot install packages.
-`pymupdf`, `numpy`, `Pillow` and `openpyxl` must already be there: run the Runtime test above. If `pymupdf` is
+`pymupdf`, `numpy`, `Pillow` and `openpyxl` must already be there: send `check setup` to the agent. If `pymupdf` is
 missing in your tenant, the skill cannot work there; tell us the exact error.
