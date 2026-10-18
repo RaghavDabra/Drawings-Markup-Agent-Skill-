@@ -69,3 +69,17 @@ Before uploading a changed script, run the real projects locally: `python tools/
 - Vector PDFs exported from CAD/Revit only. Scans, "compressed" or flattened PDFs (iLovePDF etc.) are refused.
 - Very large PDFs: platform upload limits apply. Send only the floor-plan sheets if a file is rejected.
 - Output files last for the chat session only; users must download them.
+
+## Troubleshooting
+**"Upload and replace failed ... We couldn't replace this skill"**
+The zip is valid (SKILL.md at the top, only .md/.py files, depth 2, under 100 KB). The usual causes:
+1. **The agent also has uploaded files.** Microsoft's known preview issue: an agent cannot have both skills and
+   embedded files. Configure > Knowledge: remove every uploaded file (old `drawing_markup.py`, PDFs, Excels).
+2. **Replacing a skill with a different name.** Replace only swaps a skill of the same name. Delete the old
+   skill (Configure > Skills > ... > Delete), save, then **Add** the new zip instead of replacing.
+3. **A stale draft.** Save or discard pending changes, reopen the agent, then add the skill again. If it still
+   fails, create a fresh agent (Route A steps) and add the zip there.
+
+**The agent runs but says a module is missing.** Skill scripts run in a sandbox that cannot install packages.
+`pymupdf`, `numpy`, `Pillow` and `openpyxl` must already be there: run the Runtime test above. If `pymupdf` is
+missing in your tenant, the skill cannot work there; tell us the exact error.
