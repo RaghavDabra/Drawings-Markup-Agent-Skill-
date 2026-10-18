@@ -20,7 +20,9 @@ Every edit is drawn on its own PDF layer ("Debuilt markup"), comes with a zoomed
   Agent_Instructions.txt                  paste into the agent's instructions box
 ```
 
-## Using it in a Copilot Studio agent
+## Using it in Microsoft 365 Copilot / Copilot Studio
+Full step-by-step guide and test plan: [docs/M365_Copilot_Setup.md](docs/M365_Copilot_Setup.md).
+
 1. **Build the skill zip** (or download `drawing-markup.zip` from the latest [Release](../../releases)):
    `cd drawing-markup && zip -r ../drawing-markup.zip SKILL.md scripts`
    `SKILL.md` must sit at the top of the zip. GitHub's "Download ZIP" of the whole repo will not work.

@@ -37,11 +37,14 @@ print(info)
 - `info["unit_labels"]` lists the sheets where unit labels were found. If it is empty with an Excel attached,
   say the unit numbers on the drawing do not match the Excel and show five unit numbers from each.
 
-Then ask ONE question, e.g. "I found 31 sheets and 64 units (Unsold 35, Settled 23, Sold 6), with unit labels
-on sheets 9-24. Do you want me to HIGHLIGHT each unit's label in its sale-status colour, or FILL each whole
-apartment? Defaults: Sold blue, Unsold pink, Settled grey, Reserved orange. Other options: colour a room
-('GYM green'), what a tag points to ('ST2 red'), areas by m2 ('balconies >8 blue, <8 orange'), one aspect
-('north only')."
+Then decide without asking whenever you can:
+- Drawing + Excel and no other request (or just "colour code", "do it", "go"): do NOT ask anything. Say one line
+  such as "31 sheets, 64 units (Unsold 35, Settled 23, Sold 6), unit labels on sheets 9-24 - colouring by sale
+  status now", then run the default status highlight (section 3) straight away.
+- The user already said what they want (fill, colours, a room, a tag, an area rule, an aspect): run that.
+- Only a drawing, no Excel, no request: ask ONE question, e.g. "What should I colour? e.g. 'GYM green',
+  'what ST2 points to in red', 'balconies >8 m2 blue, <8 orange', or attach the sales Excel to colour units
+  by sale status."
 
 ## 3. Run (when the user answers)
 Always pass the ORIGINAL PDF. Never use extracted pages or an already coloured output (colours blend).
@@ -75,4 +78,5 @@ Then always: `dm.write_log(log, "log.csv")`.
 4. Counts per colour, and the NOT found / NOT coloured units with their reason. A unit whose label is not on
    any sheet in this PDF is "not on these pages", not an error. Commercial rows (Office, Retail) without a
    unit tag are expected.
-5. Ask "Anything else to colour?". Files last only for this session: tell the user to download them.
+5. After a default status highlight, offer: "Want me to FILL each whole apartment instead, or change colours
+   (defaults: Sold blue, Unsold pink, Settled grey, Reserved orange)?" Otherwise ask "Anything else to colour?". Files last only for this session: tell the user to download them.
