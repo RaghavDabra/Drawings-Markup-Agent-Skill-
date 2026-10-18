@@ -29,14 +29,15 @@ Configure and look for a **Skills** section.
 1. Microsoft 365 Copilot app > **Agents** > **New agent** > switch to **Configure**.
 2. **Name**: `Debuilt Drawing Markup`. **Description**: `Colour-codes construction drawing PDFs by sale status from the sales Excel.`
 3. **Instructions**: paste all of `Agent_Instructions.txt`.
-4. **Capabilities**: turn on **Create documents, charts, and code** (the code interpreter). The script cannot run without it.
+4. **Code interpreter**: nothing to switch on. Agent Builder now always includes it for every agent, so there is no "Create documents, charts, and code" toggle any more. The runtime test below confirms it works.
 5. **Skills** > **Add** > upload `drawing-markup.zip`. Check it shows as `drawing-markup`.
-6. **Conversation starters** (so users only drop files):
+6. **Work content**: turn off Cloud files, Outlook, Teams and Web search, and set the skill to **Limited use** (... menu on the skill). The agent only needs the files users attach.
+7. **Conversation starters** (so users only drop files):
    - `Colour code these units by sale status` (attach PDF + Excel)
    - `Fill each whole apartment by sale status`
    - `Colour the GYM green`
-7. Leave **Knowledge** empty: do not upload the script or the drawings there.
-8. **Try it** (see the test plan below), then **Create** and share the agent with the team.
+8. Leave **Knowledge** empty: do not upload the script or the drawings there.
+9. **Try it** (see the test plan below), then **Create** and share the agent with the team.
 
 ## Route B: Copilot Studio, published to Microsoft 365 Copilot
 1. copilotstudio.microsoft.com > **Create** > **New agent**, using the **GitHub Copilot harness** (skills need it).
