@@ -58,3 +58,29 @@ def test_stacked_typical_floor_tag_marks_each_number_alone():
     rects = dm._unit_label_rects(page, keys)
     assert set(rects) == {dm._UnitKeys.canon("909"), dm._UnitKeys.canon("1109")}
     assert not rects[dm._UnitKeys.canon("1109")].intersects(rects[dm._UnitKeys.canon("909")])
+
+
+def test_inspect_refuses_image_only_pdf(tmp_path):
+    import fitz
+    img = fitz.open()
+    pix = fitz.Pixmap(fitz.csRGB, fitz.IRect(0, 0, 60, 40), 0)
+    pix.clear_with(200)
+    page = img.new_page(width=600, height=400)
+    page.insert_image(page.rect, pixmap=pix)
+    path = str(tmp_path / "scan.pdf")
+    img.save(path)
+    info = dm.inspect(path)
+    assert not info["ok"] and info["scanned"] == [1] and info["message"] == dm.SCAN_MESSAGE
+
+
+def test_inspect_counts_statuses_from_the_status_column(tmp_path):
+    import csv
+    path = str(tmp_path / "sales.csv")
+    with open(path, "w", newline="") as f:
+        csv.writer(f).writerows([["Unit No", "Status"], ["501", "Settled"], ["502", "Unsold"], ["503", "Sold"]])
+    page = _page_with([((100, 100), "UNIT 2U.01"), ((115, 111), "501")])
+    pdf = str(tmp_path / "plan.pdf")
+    page.parent.save(pdf)
+    info = dm.inspect(pdf, path)
+    assert info["statuses"] == {"settled": 1, "unsold": 1, "sold": 1}
+    assert info["unit_labels"] == {1: 1}

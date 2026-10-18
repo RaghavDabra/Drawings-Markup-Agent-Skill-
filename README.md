@@ -7,7 +7,7 @@ An agent skill that colour-codes vector construction-drawing PDFs (Revit/ArchiCA
 |---|---|
 | `label` | colour the closed room/region around a text label ("1:8", "GYM") |
 | `leader` | colour the region a tag's leader line points to ("ST2") |
-| `units` | colour apartments sold green / unsold red from an Excel or CSV |
+| `units` | colour apartments by sale status (sold blue, unsold pink, settled grey, reserved orange) from an Excel or CSV |
 | `area` | colour labelled areas by the m2 in the label (">8 blue, <8 orange") |
 
 Every edit is drawn on its own PDF layer ("Debuilt markup"), comes with a zoomed check PNG and a log row, and anything ambiguous (open region, duplicate unit, area mismatch) is reported as NOT coloured instead of guessed.
@@ -20,25 +20,34 @@ Every edit is drawn on its own PDF layer ("Debuilt markup"), comes with a zoomed
   Agent_Instructions.txt                  paste into the agent's instructions box
 ```
 
-## Using it as an agent skill
-1. **Get the skill zip.** Download `drawing-markup.zip` from the latest [Release](../../releases), or build it yourself:
+## Using it in a Copilot Studio agent
+1. **Build the skill zip** (or download `drawing-markup.zip` from the latest [Release](../../releases)):
    `cd drawing-markup && zip -r ../drawing-markup.zip SKILL.md scripts`
-   (Don't upload GitHub's "Download ZIP" of the whole repo: the skill must have `SKILL.md` at the top.)
-2. **Add it to your agent.** In your agent builder's skills section (e.g. Copilot Studio, Claude), upload `drawing-markup.zip`.
-3. **Paste the agent instructions.** Copy `Agent_Instructions.txt` into the agent's instructions box. It tells the agent to always use the skill and never draw by hand.
-4. **Check the runtime once.** Ask the agent to run `import pymupdf, numpy, PIL; print(pymupdf.__version__)`. If that fails, the platform can't run the script (see Limits).
-5. **Use it.** Attach a drawing PDF (plus a sales Excel for sold/unsold) and say what to colour, e.g.:
-   - "colour the GYM green on page 8"
-   - "highlight what ST2 points to in red"
-   - "balconies over 8 m2 blue, under 8 orange"
-   - "sold green, unsold red" (with the Excel attached)
+   `SKILL.md` must sit at the top of the zip. GitHub's "Download ZIP" of the whole repo will not work.
+2. **Create the agent** with the GitHub Copilot harness (skills need it) and turn on the code interpreter.
+3. **Upload the skill**: agent > Skills > Upload > `drawing-markup.zip`.
+4. **Paste `Agent_Instructions.txt`** into the agent's instructions. The instructions are always in context,
+   while a skill only loads when its description matches the request, so the instructions are what make the
+   agent load the skill for every drawing, including follow-ups.
+5. **Check the runtime once**: ask the agent to run `import pymupdf, numpy, PIL, openpyxl; print(pymupdf.__version__)`.
+6. **Test**: attach a drawing PDF and its sales Excel and say "colour code the units". In the agent's
+   reasoning view, check that `drawing-markup` was loaded and that `dm.inspect` ran first.
 
-   The agent returns the edited PDF, a check image per edit and a log of anything it refused to colour.
+Example requests: "colour the GYM green on page 8", "highlight what ST2 points to in red",
+"balconies over 8 m2 blue, under 8 orange", "fill the apartments, sold green unsold red".
 
-Skill packaging differs between platforms. This layout follows the open Agent Skills format (`SKILL.md` with `name`/`description` frontmatter plus `scripts/`). If your platform rejects it, open an issue with the error.
+## Before uploading a new version
+Run the real projects you have already checked and compare with their known results:
+```
+cp tools/cases.example.json tools/cases.json      # point the paths at your local drawings (kept out of git)
+python tools/regress.py tools/cases.json
+```
+Each line prints PASS/FAIL with the units coloured and the ones that were not. Raise `min_coloured` when a
+project gets better, so a later change cannot quietly make it worse.
 
 ## Command line
 ```
+python drawing-markup/scripts/drawing_markup.py inspect in.pdf --table sales.xlsx
 python drawing-markup/scripts/drawing_markup.py label  in.pdf out.pdf --page 8  --text "1:8" --colour red
 python drawing-markup/scripts/drawing_markup.py leader in.pdf out.pdf --page 17 --text ST2 --colour red
 python drawing-markup/scripts/drawing_markup.py units  in.pdf out.pdf --table sales.xlsx --pages 10-21
@@ -64,4 +73,4 @@ pytest -q -m "not slow"   # skip the end-to-end area test
 ```
 
 ## Licence
-MIT, see LICENSE.
+MIT, see LICENSE

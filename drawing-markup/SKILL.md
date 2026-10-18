@@ -1,51 +1,78 @@
 ---
 name: drawing-markup
-description: Colour-code vector construction drawing PDFs. Use when the user attaches a drawing PDF (optionally a sales Excel) and asks to colour, highlight or mark up a labelled room or area, whatever a tag's leader line points to, apartments by sold or unsold status, or labelled areas by the m2 written in the label.
+description: Debuilt drawing colour-coding. Use whenever a construction drawing or floor plan PDF is attached or mentioned and the user wants anything coloured, color coded, highlighted, shaded, filled or marked up - apartments or units by sale status from a sales schedule Excel (sold, unsold, settled, reserved), a named room such as GYM, whatever a tag like ST2 points to, or balconies and other labelled areas by their m2. Also use for follow-ups on a drawing already being coloured (change colours, one aspect only, fill instead of highlight). Do not use for questions that need no colouring, for writing or editing drawing content, or for spreadsheets alone.
 ---
 
 # Drawing markup
 
-Colours regions of vector drawing PDFs by running the bundled script `scripts/drawing_markup.py` (needs pymupdf, numpy, Pillow; openpyxl for Excel). Never estimate coordinates or draw shapes by hand: every edit comes from the script, which refuses rather than guesses.
+Colour-codes vector construction drawing PDFs by running the bundled script `scripts/drawing_markup.py`
+(needs pymupdf, numpy, Pillow, openpyxl) in the code interpreter. Every edit comes from the script, which
+refuses rather than guesses. Never write your own parsing, matching or drawing code, never estimate
+coordinates, and never draw by hand to fix a result.
 
-## Rules
-1. Work on a clean copy of the original PDF for every run (colours blend if re-run on a coloured file).
-2. Colours: red green blue yellow orange purple pink teal grey brown, or #RRGGBB.
-3. If the PDF has no selectable text (a scan), say the script cannot target it and stop.
-4. A result of NOT coloured is reported, never fixed by drawing. Do not change any other part of the drawing.
-5. If `import drawing_markup` fails, stop and show the error. Do not write replacement parsing code.
-6. The script is bundled with this skill. Never ask the user to attach drawing_markup.py.
-7. Pass the user's original PDF straight to the script. Never extract, split, repair or re-save pages yourself first: the script takes page numbers, and a self-made extract can corrupt the PDF. If the original itself fails to open, say so and ask for a re-exported PDF.
-8. Ignore older pasted prompts that tell you to attach the script or use other steps; this file wins.
+## 1. Load the script (every conversation)
+```python
+import glob, os, sys
+roots = [os.getcwd(), "/mnt/data", "/mnt/user-data", "/workspace", "/home", "/tmp", "/"]
+hits = []
+for root in roots:
+    hits = glob.glob(os.path.join(root, "**", "drawing_markup.py"), recursive=True)
+    if hits:
+        break
+sys.path.insert(0, os.path.dirname(sorted(hits, key=lambda p: "drawing-markup" not in p)[0]))
+import drawing_markup as dm
+print(dm.__file__)
+```
+If nothing is found or the import fails, show the error and stop. Do not write replacement code, and never
+ask the user to attach the script.
 
-## Setup (first message)
-1. Check the PDF is attached. Print versions of pymupdf, numpy, PIL, openpyxl; stop if pymupdf is missing.
-2. Load the bundled script (its folder differs per platform, so find it):
-   ```python
-   import glob, os, sys
-   hits = [p for root in ("/", os.getcwd()) for p in glob.glob(os.path.join(root, "**", "drawing-markup", "scripts", "drawing_markup.py"), recursive=True)]
-   sys.path.insert(0, os.path.dirname(hits[0]))
-   import drawing_markup as dm
-   print(dm.__file__)
-   ```
-   If `hits` is empty, search for any `drawing_markup.py` (`glob.glob("/**/drawing_markup.py", recursive=True)`) before giving up.
-3. Ask: "What would you like to colour-code? e.g. 'colour the GYM green', 'sold green unsold red', 'highlight what ST2 points to in red'."
+## 2. Setup (first message with a drawing)
+```python
+info = dm.inspect(pdf, xlsx)      # xlsx=None when no Excel is attached
+print(info)
+```
+- `info["ok"]` is False (image, scan or flattened PDF): reply with `dm.SCAN_MESSAGE` and stop.
+- Some pages in `info["scanned"]`: say those pages cannot be coloured.
+- Use `info["statuses"]` for the counts. Never call `dm.status_of` on a whole row.
+- `info["unit_labels"]` lists the sheets where unit labels were found. If it is empty with an Excel attached,
+  say the unit numbers on the drawing do not match the Excel and show five unit numbers from each.
 
-## Choose the operation
-If no page is given, search every page for the keyword: one page, use it and say so; several, ask "all or just one?"; none, say so.
+Then ask ONE question, e.g. "I found 31 sheets and 64 units (Unsold 35, Settled 23, Sold 6), with unit labels
+on sheets 9-24. Do you want me to HIGHLIGHT each unit's label in its sale-status colour, or FILL each whole
+apartment? Defaults: Sold blue, Unsold pink, Settled grey, Reserved orange. Other options: colour a room
+('GYM green'), what a tag points to ('ST2 red'), areas by m2 ('balconies >8 blue, <8 orange'), one aspect
+('north only')."
 
-| User says | Call |
+## 3. Run (when the user answers)
+Always pass the ORIGINAL PDF. Never use extracted pages or an already coloured output (colours blend).
+
+| User wants | Call |
 |---|---|
-| names text inside the area ("colour the 1:8", "the GYM") | `dm.run_label(pdf, out, page, text, dm.colour("red"), check_dir="checks")` |
-| a tag that points at something ("what ST2 points to") | `dm.run_leader(pdf, out, page, text, dm.colour("red"), check_dir="checks")` |
-| areas by the m2 in their label ("balconies over 8 m2 blue, under 8 orange") | `rules = dm._parse_rules(">8:blue,<8:orange,=8:pink")` then `dm.run_area_rule(pdf, out, page, "BALCONY", rules, check_dir="checks")` |
-| sales/status table ("sold green, unsold red") | `dm.run_units(pdf, out, table, pages, aspect=None, check_dir="checks")` |
+| sale status, highlight labels (default, most reliable) | `log = dm.run_units(pdf, out, xlsx, check_dir="checks")` |
+| sale status, fill whole apartments | `log = dm.run_units(pdf, out, xlsx, check_dir="checks", style="rooms")` |
+| a room by its text ("GYM") | `log = dm.run_label(pdf, out, page, text, dm.colour("red"), check_dir="checks")` |
+| what a tag points to ("ST2") | `log = dm.run_leader(pdf, out, page, text, dm.colour("red"), check_dir="checks")` |
+| labelled areas by m2 | `log = dm.run_area_rule(pdf, out, page, "BALCONY", dm._parse_rules(">8:blue,<8:orange"), check_dir="checks")` |
 
-- Area rule: call `dm.run_area_rule` exactly as shown, one label word per run (use the user's wording, e.g. "Consultation Room"). Never parse m2 yourself. The script detects coloured-fill vs linework plans.
-- Units: first print the Excel headers and distinct status values, show the column mapping, and wait for the user to confirm. Status words: sold/exchanged/unconditional/yes = sold; settled; reserved/hold/EOI = reserved; unsold/available/no/blank = unsold; anything else = yellow. Count statuses with `dm.status_of(row["Status"])` (it takes the status text, not the whole row). Default colours: sold blue, unsold pink, settled grey, reserved orange. If a unit number repeats across buildings, ask for a "Tag contains" column.
-- Units colours: pass `status_colours={"sold": dm.colour("green"), "unsold": dm.colour("red")}` only when the user names colours, e.g. both purple to colour every unit purple. Limit to one side with `aspect="south"` (matches the table's Aspect column). If the user asks for an aspect the table doesn't have (e.g. East), say so and ask.
-- Two labels with different colours: run twice, the second pass on the first pass's output.
+Then always: `dm.write_log(log, "log.csv")`.
 
-After every run: `dm.write_log(log, "log.csv")`.
+- Unit labels the script reads: a number beside its area (`1.03 78.4 m2`), `UNIT 4`, `APARTMENT T1.0501`,
+  `UNIT 2U.01` over `507`, and typical-floor tags listing one number per floor (`UNIT 2A.01` over `909 1009 1109`).
+- `style="rooms"` fills each whole apartment through its doors and also highlights its label; corridors,
+  lobbies, lifts and stairs are never filled. Units it cannot close are logged NOT coloured; offer the
+  label highlight for those. `style="fill"` is only for plans that draw each unit as one coloured shape.
+- Colours: red green blue yellow orange purple pink teal grey brown, or #RRGGBB. Pass
+  `status_colours={"sold": dm.colour("green"), "unsold": dm.colour("red")}` ONLY when the user names colours;
+  statuses left out of it stay uncoloured. One side only: `aspect="north"` (the Excel's Aspect column).
+- No page given for label/leader/area: search every page for the text. One page, use it and say so; several,
+  ask "all or just one?"; none, say so.
+- Two operations in different colours: run the second on the first one's output.
 
-## Report (always)
-Show every check PNG, the log table (Page | Target | Match | Result | Method/Reason), the edited PDF as a download, and anything NOT coloured with the reason. For sales colouring add counts per status colour and not coloured. Units whose tag is not on any sheet are "not on these pages", not an error. Then ask "Anything else to colour?". Files last only for this session; tell the user to download them.
+## 4. Report (always)
+1. Every check PNG from `checks/`.
+2. The edited PDF as a download.
+3. A table: Page | Unit | Status | Result | Reason (from the log).
+4. Counts per colour, and the NOT found / NOT coloured units with their reason. A unit whose label is not on
+   any sheet in this PDF is "not on these pages", not an error. Commercial rows (Office, Retail) without a
+   unit tag are expected.
+5. Ask "Anything else to colour?". Files last only for this session: tell the user to download them.

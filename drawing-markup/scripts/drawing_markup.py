@@ -27,7 +27,7 @@ Design rules that make it reliable:
   * All markup goes on its own PDF layer ("Debuilt markup") so it can be switched off in Acrobat/Bluebeam.
 """
 
-import argparse, csv, math, os, re
+import argparse, collections, csv, math, os, re
 import numpy as np
 from PIL import Image, ImageDraw
 
@@ -571,6 +571,7 @@ def _tag_stack(page, r, gap=4.0):
     lines = _BLOCKS[key]
     box, txt = fitz.Rect(r), []
     vertical = r.height > 1.5 * r.width
+    sideways = r.height > r.width                  # a short tag ("505") on a rotated sheet: too square to tell
     own = [t for lr, t in lines if (lr & box).get_area() > 0.5 * min(lr.get_area(), box.get_area())]
     shape = re.sub(r"\d", "9", own[0]) if own else None
     grown = True
@@ -583,10 +584,12 @@ def _tag_stack(page, r, gap=4.0):
             cx, cy = (lr.x0 + lr.x1) / 2, (lr.y0 + lr.y1) / 2
             if re.sub(r"\d", "9", t) == shape:
                 continue  # another unit's label: not part of this tag
-            if vertical:  # text rotated 90 degrees: lines sit side by side
-                near = box.y0 - 6 <= cy <= box.y1 + 6 and (-2 <= lr.x0 - box.x1 <= gap or -2 <= box.x0 - lr.x1 <= gap)
+            side = box.y0 - 6 <= cy <= box.y1 + 6 and (-2 <= lr.x0 - box.x1 <= gap or -2 <= box.x0 - lr.x1 <= gap)
+            stack = box.x0 - 6 <= cx <= box.x1 + 6 and (-2 <= lr.y0 - box.y1 <= gap or -2 <= box.y0 - lr.y1 <= gap)
+            if vertical or (sideways and page.rotation in (90, 270)):  # text rotated 90 degrees: lines sit side by side
+                near = side
             else:
-                near = box.x0 - 6 <= cx <= box.x1 + 6 and (-2 <= lr.y0 - box.y1 <= gap or -2 <= box.y0 - lr.y1 <= gap)
+                near = stack
             if near:
                 box |= lr; txt.append(t); grown = True
     return box, " | ".join(txt)
@@ -1716,10 +1719,46 @@ def run_area_rule(pdf, out_pdf, page_no, text, rules, which=None, check_dir=None
     return work.log
 
 
+SCAN_MESSAGE = ("This file has no vector linework or text the script can read. "
+                "Please send the PDF exported from CAD.")
+
+
+def inspect(pdf, table=None, sheet=None):
+    """Setup check before any colouring. Returns a dict:
+    pages, readable (vector pages with text), scanned (image-only pages), ok (False when nothing is readable:
+    show SCAN_MESSAGE and stop), and with a table: rows, statuses {status: count}, and unit_labels
+    {page: n} - how many of the table's units have a label the script can find on each page."""
+    doc = fitz.open(pdf)
+    readable, scanned = [], []
+    for n, p in enumerate(doc, 1):
+        if p.get_text("words"):
+            readable.append(n)
+        else:
+            covered = sum(fitz.Rect(i["bbox"]).get_area() for i in p.get_image_info())
+            if covered > 0.5 * p.rect.get_area() or not p.get_drawings():
+                scanned.append(n)
+    info = {"pages": len(doc), "readable": readable, "scanned": scanned, "ok": bool(readable)}
+    if not readable:
+        info["message"] = SCAN_MESSAGE
+    if table:
+        rows = read_table(table, sheet)
+        info["rows"] = len(rows)
+        info["statuses"] = dict(collections.Counter(status_of(_pick(r, *STATUS_COLS)) for r in rows))
+        by_id = _UnitKeys()
+        for r in rows:
+            by_id.setdefault(_pick(r, *UNIT_COLS), []).append(r)
+        info["unit_labels"] = {}
+        for n in readable:
+            k = len(_unit_label_rects(doc[n - 1], by_id))
+            if k:
+                info["unit_labels"][n] = k
+    return info
+
+
 if __name__ == "__main__":
     ap = argparse.ArgumentParser()
-    ap.add_argument("op", choices=["label", "leader", "units", "area"])
-    ap.add_argument("pdf"); ap.add_argument("out")
+    ap.add_argument("op", choices=["inspect", "label", "leader", "units", "area"])
+    ap.add_argument("pdf"); ap.add_argument("out", nargs="?")
     ap.add_argument("--page", type=int); ap.add_argument("--pages")
     ap.add_argument("--text"); ap.add_argument("--which", help="e.g. 1,3 to colour only those matches")
     ap.add_argument("--colour", default="red")
@@ -1728,6 +1767,11 @@ if __name__ == "__main__":
     ap.add_argument("--no-room", dest="room", action="store_false", default=None, help="area op: force coloured-fill plan (default: auto-detect)")
     ap.add_argument("--checks", default=None, help="folder for check PNGs (default: next to output)")
     a = ap.parse_args()
+    if a.op == "inspect":
+        print(inspect(a.pdf, a.table))
+        raise SystemExit(0)
+    if a.out is None:
+        ap.error("%s needs an output PDF path" % a.op)
     need = {"label": ("page", "text"), "leader": ("page", "text"), "area": ("page", "text", "rules"), "units": ("table",)}
     missing = ["--" + k for k in need[a.op] if getattr(a, k) is None]
     if missing:

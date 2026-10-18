@@ -1,0 +1,8 @@
+[
+  {"name": "Prospect St (label)", "pdf": "projects/5.03-05_WH20151089_-_Endorsed_Plans_-_Signed.PDF",
+   "xlsx": "projects/Prospect_St_Sales_Schedule.xlsx", "style": "label", "min_coloured": 60},
+  {"name": "Franklin T1 (rooms)", "pdf": "projects/21170_Apartments_Set_Combined.pdf",
+   "xlsx": "projects/franklin_sales.xlsx", "style": "rooms", "min_coloured": 23},
+  {"name": "Alphington (scan)", "pdf": "projects/5.01-01_HEI_Alphington-Architectural_Plans_Debuilt_compressed_1.pdf",
+   "xlsx": "projects/Caydon_RSF_sales_schedule.xlsx", "expect_scan": true}
+]

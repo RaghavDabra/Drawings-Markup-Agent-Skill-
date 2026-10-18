@@ -224,3 +224,7 @@ __marimo__/
 *_checks/
 checks/
 *.pdf
+
+# real project drawings and their regression list stay local
+projects/
+tools/cases.json
