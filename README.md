@@ -64,4 +64,4 @@ pytest -q -m "not slow"   # skip the end-to-end area test
 ```
 
 ## Licence
-MIT, see LICENSE.
+MIT, see LICENSE
