@@ -699,7 +699,7 @@ def status_of(s):
         return "reserved"
     if s.startswith(("unsold", "available", "for sale")) or s in ("", "no", "n", "false", "0", "none"):
         return "unsold"
-    if s.startswith(("sold", "exchanged", "unconditional", "contract")) or s in ("yes", "y", "true", "1"):
+    if s.startswith(("sold", "exchanged", "unconditional", "conditional", "contract")) or s in ("yes", "y", "true", "1"):
         return "sold"
     return s
 
@@ -766,7 +766,7 @@ def _area_anchors(ws):
     return out
 
 
-_UNIT_PREFIX = {"UNIT", "APARTMENT", "APT", "APT.", "LOT", "TOWNHOUSE", "VILLA", "RESIDENCE", "DWELLING", "SHOP"}
+_UNIT_PREFIX = {"UNIT", "APARTMENT", "APT", "APT.", "LOT", "TOWNHOUSE", "VILLA", "RESIDENCE", "DWELLING", "SHOP", "IU"}
 _TYPE_CODE_RE = re.compile(r"[0-9]{0,2}[A-Za-z]{1,3}[0-9]{0,2}([.\-][0-9A-Za-z]{1,3})?")   # apartment type: 2U.01, 3B, B2-1
 
 
@@ -776,7 +776,7 @@ def _tag_head(ws, i):
     and a typical-floor tag listing one number per floor ('UNIT 2A.01' over '909 1009 1109 ... 1509').
     Each step back must touch the word before it, so a tag never reaches into unrelated text."""
     def touch(a, b):
-        return fitz.Rect(a[:4]).intersects(fitz.Rect(b[:4]) + (-20, -20, 20, 20))
+        return fitz.Rect(a[:4]).intersects(fitz.Rect(b[:4]) + (-30, -20, 30, 20))
     def prefix(w):
         return w[4].strip().upper().rstrip(":") in _UNIT_PREFIX
     j = i - 1
@@ -786,6 +786,8 @@ def _tag_head(ws, i):
                              and touch(ws[i], ws[i + 1]))
     if j >= 0 and prefix(ws[j]) and (ws[j][5:7] == ws[j + 1][5:7] or touch(ws[j], ws[j + 1])):
         return j, stacked
+    if j >= 0 and ws[j][4].strip() in ("-", "–") and j >= 1 and prefix(ws[j - 1]) and touch(ws[j - 1], ws[j]) and touch(ws[j], ws[j + 1]):
+        return j - 1, stacked
     if (j >= 1 and prefix(ws[j - 1]) and _TYPE_CODE_RE.fullmatch(ws[j][4].strip())
             and touch(ws[j - 1], ws[j]) and touch(ws[j], ws[j + 1])):
         return j - 1, stacked
