@@ -84,3 +84,27 @@ def test_inspect_counts_statuses_from_the_status_column(tmp_path):
     info = dm.inspect(pdf, path)
     assert info["statuses"] == {"settled": 1, "unsold": 1, "sold": 1}
     assert info["unit_labels"] == {1: 1}
+
+
+def test_colour_by_status_handles_several_pdfs_and_skips_scans(tmp_path):
+    import csv, time, zipfile
+    import fitz
+    for name, unit in (("L5.pdf", "507"), ("L6.pdf", "607")):
+        page = _page_with([((100, 100), "UNIT 2U.01"), ((115, 111), unit)])
+        page.parent.save(str(tmp_path / name))
+        time.sleep(0.01)
+    scan = fitz.open()
+    pix = fitz.Pixmap(fitz.csRGB, fitz.IRect(0, 0, 60, 40), 0)
+    scan.new_page(width=600, height=400).insert_image(fitz.Rect(0, 0, 600, 400), pixmap=pix)
+    scan.save(str(tmp_path / "scan.pdf"))
+    with open(tmp_path / "sales.csv", "w", newline="") as f:
+        csv.writer(f).writerows([["Unit No", "Level", "Status"], ["507", "5", "Sold"], ["607", "6", "Unsold"],
+                                 ["707", "7", "Settled"]])
+    r = dm.colour_by_status(folder=str(tmp_path))
+    assert r["ok"] and r["coloured"] == {"blue": 1, "pink": 1}
+    assert r["not_found"] == {"level not in this drawing set": ["707"]}
+    assert [f["ok"] for f in r["files"]] == [True, True, False] and "scan.pdf" in r["message"]
+    names = zipfile.ZipFile(r["download_zip"]).namelist()
+    assert "L5_Colour_Coded.pdf" in names and "L6_Colour_Coded.pdf" in names
+    again = dm.colour_by_status(folder=str(tmp_path))    # a rerun must ignore its own outputs
+    assert len(again["files"]) == 3 and again["coloured"] == r["coloured"]

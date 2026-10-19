@@ -1766,80 +1766,127 @@ def inspect(pdf, table=None, sheet=None, labels=True):
 UPLOAD_DIRS = ("/mnt/data", "/mnt/user-data", ".")
 
 
-def find_inputs(folder=None):
-    """The user's attached drawing PDF and sales table: the newest .pdf and .xlsx/.xls/.csv in the upload folder
-    (M365 Copilot puts attachments in /mnt/data), skipping files this script wrote. Returns (pdf, table);
-    either can be None."""
-    def ours(p):
-        return "_colour_coded" in os.path.basename(p).lower() or os.path.basename(p) == "log.csv"
+def _is_output(path):
+    return "_colour_coded" in os.path.basename(path).lower() or os.path.basename(path) == "log.csv"
+
+
+def find_all_inputs(folder=None):
+    """Every attached drawing PDF (oldest first, so sheets keep the order they were attached in) and the newest
+    sales table in the upload folder (M365 Copilot puts attachments in /mnt/data), skipping files this script
+    wrote. Returns ([pdf, ...], table or None)."""
     for d in ([folder] if folder else UPLOAD_DIRS):
         if not os.path.isdir(d):
             continue
-        files = sorted((os.path.join(d, f) for f in os.listdir(d)), key=os.path.getmtime, reverse=True)
-        pdfs = [f for f in files if f.lower().endswith(".pdf") and not ours(f)]
-        tables = [f for f in files if f.lower().endswith((".xlsx", ".xlsm", ".xls", ".csv")) and not ours(f)]
+        files = sorted((os.path.join(d, f) for f in os.listdir(d)), key=os.path.getmtime)
+        pdfs = [f for f in files if f.lower().endswith(".pdf") and not _is_output(f)]
+        tables = [f for f in files if f.lower().endswith((".xlsx", ".xlsm", ".xls", ".csv")) and not _is_output(f)]
         if pdfs or tables:
-            return (pdfs[0] if pdfs else None), (tables[0] if tables else None)
-    return None, None
+            return pdfs, (tables[-1] if tables else None)
+    return [], None
+
+
+def find_inputs(folder=None):
+    """The newest attached drawing PDF and sales table: (pdf, table), either can be None."""
+    pdfs, table = find_all_inputs(folder)
+    return (pdfs[-1] if pdfs else None), table
 
 
 def colour_by_status(pdf=None, table=None, out=None, style="label", status_colours=None, aspect=None, folder=None,
                      checks=3):
-    """Everything for sale-status colouring in ONE call, so the agent needs one code run: find the attachments,
-    refuse scans, colour, write the log. Returns a short summary to report from:
-    ok, message, pdf, table, out, log_csv, check_dir, pages, rows, statuses, coloured {colour word: n},
-    not_found {"level not in this drawing set": [...], "no unit tag on its sheet": [...]}.
-    checks: how many check images to render (default 3, None = one per unit; each sheet rendered costs time)."""
-    if pdf is None or table is None:
-        fp, ft = find_inputs(folder)
-        pdf, table = pdf or fp, table or ft
-    if not pdf:
+    """Everything for sale-status colouring in ONE call, so the agent needs one code run: find the attachments
+    (every attached PDF, e.g. one file per floor), refuse scans, colour, write the logs. Returns a summary:
+    ok, message, table, rows, statuses, coloured {colour word: n}, not_found {"level not in this drawing set":
+    [...], "no unit tag on its sheet": [...]}, files [{pdf, pages, ok, out, log_csv, unit_label_pages}],
+    scanned [pdfs refused as scans], preview [up to `checks` check PNGs], checks_zip, and download_zip (all
+    coloured PDFs, logs and checks in one file). With one PDF also out, log_csv, pdf, pages, unit_label_pages.
+    pdf may be a path or a list. checks: check images to render in total (default 3, None = one per unit)."""
+    pdfs, found_table = ([], None) if (pdf is not None and table is not None) else find_all_inputs(folder)
+    pdfs = [pdf] if isinstance(pdf, str) else list(pdf or pdfs)
+    table = table or found_table
+    if not pdfs:
         return {"ok": False, "message": "No drawing PDF attached. Please attach the drawing PDF and the sales Excel."}
     if not table:
         return {"ok": False, "message": "No sales Excel attached. Please attach the sales schedule to colour units by sale status."}
-    info = inspect(pdf, table, labels=False)
-    base = os.path.dirname(os.path.abspath(pdf))
-    summary = {"ok": info["ok"], "pdf": pdf, "table": table, "pages": info["pages"], "rows": info.get("rows"),
-               "statuses": info.get("statuses")}
-    if not info["ok"]:
+    import zipfile
+    rows = read_table(table)
+    summary = {"ok": False, "table": table, "rows": len(rows),
+               "statuses": dict(collections.Counter(status_of(_pick(r, *STATUS_COLS)) for r in rows)),
+               "files": [], "scanned": []}
+    base = os.path.dirname(os.path.abspath(pdfs[0]))
+    check_root = os.path.join(base, "checks")
+    if os.path.isdir(check_root):                # a rerun must not mix in the previous run's images
+        for root, _dirs, fs in os.walk(check_root):
+            for f in fs:
+                if f.endswith(".png"):
+                    os.remove(os.path.join(root, f))
+    logs, pngs, budget = [], [], checks
+    for path in pdfs:
+        info = inspect(path, labels=False)
+        entry = {"pdf": path, "pages": info["pages"], "ok": info["ok"]}
+        summary["files"].append(entry)
+        if not info["ok"]:
+            summary["scanned"].append(path)
+            continue
+        stem = os.path.splitext(os.path.basename(path))[0]
+        o = out if (out and len(pdfs) == 1) else os.path.join(base, stem + "_Colour_Coded.pdf")
+        cdir = check_root if len(pdfs) == 1 else os.path.join(check_root, stem)
+        log = run_units(path, o, table, status_colours=status_colours, aspect=aspect, check_dir=cdir, style=style,
+                        max_checks=budget)
+        log_csv = os.path.splitext(o)[0] + "_log.csv"
+        write_log(log, log_csv)
+        made = sorted(os.path.join(cdir, f) for f in os.listdir(cdir) if f.endswith(".png")) if os.path.isdir(cdir) else []
+        pngs += made
+        if budget is not None:
+            budget = max(0, budget - len(made))
+        entry.update(out=o, log_csv=log_csv, unit_label_pages=sorted({r["page"] for r in log if r.get("page")}))
+        logs.append(log)
+    if not logs:
         summary["message"] = SCAN_MESSAGE
         return summary
-    stem = os.path.splitext(os.path.basename(pdf))[0]
-    out = out or os.path.join(base, stem + "_Colour_Coded.pdf")
-    check_dir = os.path.join(base, "checks")
-    if os.path.isdir(check_dir):                 # a rerun must not mix in the previous run's images
-        for f in os.listdir(check_dir):
-            if f.endswith(".png"):
-                os.remove(os.path.join(check_dir, f))
-    log = run_units(pdf, out, table, status_colours=status_colours, aspect=aspect, check_dir=check_dir, style=style,
-                    max_checks=checks)
-    log_csv = os.path.splitext(out)[0] + "_log.csv"
-    write_log(log, log_csv)
-    coloured = collections.Counter()
-    done = set()
-    for r in log:                              # style="rooms" logs a fill row and a label row: count each unit once
-        st, key = str(r.get("status", "")), _UnitKeys.canon(r.get("target"))
-        if st.startswith("coloured") and key not in done:
-            coloured[st.replace("coloured ", "")] += 1
-            done.add(key)
-    level_of = {_UnitKeys.canon(_pick(r, *UNIT_COLS)): _pick(r, "level", "floor", "lvl") for r in read_table(table)}
+    summary["ok"] = True
+    if summary["scanned"]:
+        summary["message"] = "Not coloured (scanned or flattened, no readable linework): " + ", ".join(
+            os.path.basename(p) for p in summary["scanned"]) + ". Please send the PDF exported from CAD."
+    # a unit counts as done if ANY sheet coloured it; style="rooms" logs a fill row and a label row: count once
+    coloured, done = collections.Counter(), set()
+    for log in logs:
+        for r in log:
+            st, key = str(r.get("status", "")), _UnitKeys.canon(r.get("target"))
+            if st.startswith("coloured") and key not in done:
+                coloured[st.replace("coloured ", "")] += 1
+                done.add(key)
+    level_of = {_UnitKeys.canon(_pick(r, *UNIT_COLS)): _pick(r, "level", "floor", "lvl") for r in rows}
     found_levels = {level_of.get(u) for u in done} - {None, ""}
-    missing = [r["target"] for r in log if str(r.get("status", "")).startswith("NOT")
-               and _UnitKeys.canon(r["target"]) not in done]
     nf = {"level not in this drawing set": [], "no unit tag on its sheet": []}
-    for u in dict.fromkeys(missing):
-        lvl = level_of.get(_UnitKeys.canon(u))
-        nf["no unit tag on its sheet" if lvl and lvl in found_levels else "level not in this drawing set"].append(u)
-    pngs = sorted(f for f in os.listdir(check_dir) if f.endswith(".png")) if os.path.isdir(check_dir) else []
-    checks_zip = os.path.splitext(out)[0] + "_checks.zip"
-    import zipfile
+    for log in logs:
+        for r in log:
+            u = r.get("target")
+            if not str(r.get("status", "")).startswith("NOT") or _UnitKeys.canon(u) in done:
+                continue
+            lvl = level_of.get(_UnitKeys.canon(u))
+            k = "no unit tag on its sheet" if lvl and lvl in found_levels else "level not in this drawing set"
+            if u not in nf[k]:
+                nf[k].append(u)
+    ok_files = [f for f in summary["files"] if f.get("out")]
+    stem = os.path.splitext(ok_files[0]["out"])[0] if len(ok_files) == 1 else os.path.join(base, "All_Colour_Coded")
+    checks_zip = stem + "_checks.zip"
     with zipfile.ZipFile(checks_zip, "w", zipfile.ZIP_DEFLATED) as z:  # one download instead of dozens of images
         for f in pngs:
-            z.write(os.path.join(check_dir, f), f)
-    summary.update(checks_zip=checks_zip, preview=[os.path.join(check_dir, f) for f in pngs[:3]])
-    summary["unit_label_pages"] = sorted({r["page"] for r in log if r.get("page")})
-    summary.update(out=out, log_csv=log_csv, check_dir=check_dir, coloured=dict(coloured),
-                   not_found={k: v for k, v in nf.items() if v})
+            z.write(f, os.path.relpath(f, check_root))
+    summary.update(coloured=dict(coloured), not_found={k: v for k, v in nf.items() if v},
+                   preview=pngs[:3], checks_zip=checks_zip, check_dir=check_root)
+    if len(ok_files) == 1:
+        f = ok_files[0]
+        summary.update(pdf=f["pdf"], pages=f["pages"], out=f["out"], log_csv=f["log_csv"],
+                       unit_label_pages=f["unit_label_pages"])
+    else:
+        download_zip = os.path.join(base, "All_Colour_Coded.zip")
+        with zipfile.ZipFile(download_zip, "w", zipfile.ZIP_DEFLATED) as z:
+            for f in ok_files:
+                z.write(f["out"], os.path.basename(f["out"]))
+                z.write(f["log_csv"], os.path.basename(f["log_csv"]))
+            z.write(checks_zip, os.path.basename(checks_zip))
+        summary["download_zip"] = download_zip
     return summary
 
 

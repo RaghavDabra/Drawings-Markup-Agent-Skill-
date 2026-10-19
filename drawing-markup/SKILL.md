@@ -13,7 +13,7 @@ coordinates, and never draw by hand to fix a result.
 ## 1. Sale-status colouring: ONE code run (the default)
 For a drawing + sales Excel (no other words, "colour code", "go", "fill the apartments", colours, an aspect),
 run this single block and nothing before it. Do not list or search for files first: the script finds the
-attachments itself.
+attachments itself, including SEVERAL drawing PDFs (e.g. one file per floor) - never loop over files yourself.
 ```python
 import glob, os, sys
 hits = glob.glob("/home/oai/skills/**/drawing_markup.py", recursive=True) or glob.glob("/**/drawing_markup.py", recursive=True)
@@ -21,9 +21,12 @@ sys.path.insert(0, os.path.dirname(hits[0])); import drawing_markup as dm
 r = dm.colour_by_status()          # style="rooms" to fill whole apartments; status_colours=..., aspect="north"
 print(r)
 ```
-- `r["ok"]` is False: reply with `r["message"]` only, and stop.
+- `r["ok"]` is False: reply with `r["message"]` only, and stop. `r["ok"]` True with a `r["message"]`: some PDFs
+  were scans and were skipped; say so in one line.
 - Otherwise report from `r` (section 4): `r["out"]` is the PDF, `r["log_csv"]` the log, `r["check_dir"]` the
   check images, `r["coloured"]` the counts per colour, `r["not_found"]` the units not coloured grouped by reason.
+  Several PDFs: there is no `r["out"]`; offer `r["download_zip"]` (every coloured PDF, log and the checks) and
+  list `r["files"]` (each PDF with its pages and coloured output).
 - Pass `status_colours={"sold": dm.colour("green"), "unsold": dm.colour("red")}` ONLY when the user names
   colours; statuses left out of it stay uncoloured. Follow-ups ("make sold green", "fill instead") rerun the same
   block with the new arguments: it always starts from the ORIGINAL attached PDF.
@@ -64,7 +67,7 @@ Then always: `dm.write_log(log, "log.csv")`. (Sale-status colouring uses section
 - Two operations in different colours: run the second on the first one's output.
 
 ## 4. Report (always, keep it short)
-1. Offer as downloads: the coloured PDF (`r["out"]`), the check images zip (`r["checks_zip"]`, 3 images by default; offer all of them) and the log
+1. Offer as downloads: the coloured PDF (`r["out"]`, or `r["download_zip"]` for several PDFs), the check images zip (`r["checks_zip"]`, 3 images by default; offer all of them) and the log
    (`r["log_csv"]`). Show at most the 3 images in `r["preview"]`; never display every check image.
 2. Counts per colour from `r["coloured"]`, e.g. "Coloured 60: 32 pink (unsold), 22 grey (settled), 6 blue (sold)".
 3. Not coloured, one line per reason from `r["not_found"]`: "level not in this drawing set" (normal when the PDF
