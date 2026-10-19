@@ -10,54 +10,42 @@ Colour-codes vector construction drawing PDFs by running the bundled script `scr
 refuses rather than guesses. Never write your own parsing, matching or drawing code, never estimate
 coordinates, and never draw by hand to fix a result.
 
-## 1. Load the script (every conversation)
+## 1. Sale-status colouring: ONE code run (the default)
+For a drawing + sales Excel (no other words, "colour code", "go", "fill the apartments", colours, an aspect),
+run this single block and nothing before it. Do not list or search for files first: the script finds the
+attachments itself.
 ```python
 import glob, os, sys
-roots = [os.getcwd(), "/mnt/data", "/mnt/user-data", "/workspace", "/home", "/tmp", "/"]
-hits = []
-for root in roots:
-    hits = glob.glob(os.path.join(root, "**", "drawing_markup.py"), recursive=True)
-    if hits:
-        break
-sys.path.insert(0, os.path.dirname(sorted(hits, key=lambda p: "drawing-markup" not in p)[0]))
-import drawing_markup as dm
-print(dm.__file__)
+hits = glob.glob("/home/oai/skills/**/drawing_markup.py", recursive=True) or glob.glob("/**/drawing_markup.py", recursive=True)
+sys.path.insert(0, os.path.dirname(hits[0])); import drawing_markup as dm
+r = dm.colour_by_status()          # style="rooms" to fill whole apartments; status_colours=..., aspect="north"
+print(r)
 ```
-If nothing is found or the import fails, show the error and stop. Do not write replacement code, and never
-ask the user to attach the script.
+- `r["ok"]` is False: reply with `r["message"]` only, and stop.
+- Otherwise report from `r` (section 4): `r["out"]` is the PDF, `r["log_csv"]` the log, `r["check_dir"]` the
+  check images, `r["coloured"]` the counts per colour, `r["not_found"]` the units not coloured grouped by reason.
+- Pass `status_colours={"sold": dm.colour("green"), "unsold": dm.colour("red")}` ONLY when the user names
+  colours; statuses left out of it stay uncoloured. Follow-ups ("make sold green", "fill instead") rerun the same
+  block with the new arguments: it always starts from the ORIGINAL attached PDF.
+- If the import fails, show the exact error and stop. Never write replacement code, never ask the user to attach
+  the script.
 
-## 2. Setup (first message with a drawing)
-```python
-info = dm.inspect(pdf, xlsx)      # xlsx=None when no Excel is attached
-print(info)
-```
-- `info["ok"]` is False (image, scan or flattened PDF): reply with `dm.SCAN_MESSAGE` and stop.
-- Some pages in `info["scanned"]`: say those pages cannot be coloured.
-- Use `info["statuses"]` for the counts. Never call `dm.status_of` on a whole row.
-- `info["unit_labels"]` lists the sheets where unit labels were found. If it is empty with an Excel attached,
-  say the unit numbers on the drawing do not match the Excel and show five unit numbers from each.
+## 2. Anything else (no Excel, or a room / tag / area request)
+Load the script with the first three lines above, then `info = dm.inspect(pdf)` (paths from
+`pdf, xlsx = dm.find_inputs()`). `info["ok"]` False: reply with `dm.SCAN_MESSAGE` and stop. Only a drawing and
+no request: ask ONE question, e.g. "What should I colour? e.g. 'GYM green', 'what ST2 points to in red',
+'balconies >8 m2 blue, <8 orange', or attach the sales Excel to colour units by sale status."
 
-Then decide without asking whenever you can:
-- Drawing + Excel and no other request (or just "colour code", "do it", "go"): do NOT ask anything. Say one line
-  such as "31 sheets, 64 units (Unsold 35, Settled 23, Sold 6), unit labels on sheets 9-24 - colouring by sale
-  status now", then run the default status highlight (section 3) straight away.
-- The user already said what they want (fill, colours, a room, a tag, an area rule, an aspect): run that.
-- Only a drawing, no Excel, no request: ask ONE question, e.g. "What should I colour? e.g. 'GYM green',
-  'what ST2 points to in red', 'balconies >8 m2 blue, <8 orange', or attach the sales Excel to colour units
-  by sale status."
-
-## 3. Run (when the user answers)
+## 3. Other operations
 Always pass the ORIGINAL PDF. Never use extracted pages or an already coloured output (colours blend).
 
 | User wants | Call |
 |---|---|
-| sale status, highlight labels (default, most reliable) | `log = dm.run_units(pdf, out, xlsx, check_dir="checks")` |
-| sale status, fill whole apartments | `log = dm.run_units(pdf, out, xlsx, check_dir="checks", style="rooms")` |
 | a room by its text ("GYM") | `log = dm.run_label(pdf, out, page, text, dm.colour("red"), check_dir="checks")` |
 | what a tag points to ("ST2") | `log = dm.run_leader(pdf, out, page, text, dm.colour("red"), check_dir="checks")` |
 | labelled areas by m2 | `log = dm.run_area_rule(pdf, out, page, "BALCONY", dm._parse_rules(">8:blue,<8:orange"), check_dir="checks")` |
 
-Then always: `dm.write_log(log, "log.csv")`.
+Then always: `dm.write_log(log, "log.csv")`. (Sale-status colouring uses section 1 instead.)
 
 - Unit labels the script reads: a number beside its area (`1.03 78.4 m2`), `UNIT 4`, `APARTMENT T1.0501`,
   `UNIT 2U.01` over `507`, and typical-floor tags listing one number per floor (`UNIT 2A.01` over `909 1009 1109`).
@@ -71,12 +59,12 @@ Then always: `dm.write_log(log, "log.csv")`.
   ask "all or just one?"; none, say so.
 - Two operations in different colours: run the second on the first one's output.
 
-## 4. Report (always)
-1. Every check PNG from `checks/`.
-2. The edited PDF as a download.
-3. A table: Page | Unit | Status | Result | Reason (from the log).
-4. Counts per colour, and the NOT found / NOT coloured units with their reason. A unit whose label is not on
-   any sheet in this PDF is "not on these pages", not an error. Commercial rows (Office, Retail) without a
-   unit tag are expected.
-5. After a default status highlight, offer: "Want me to FILL each whole apartment instead, or change colours
-   (defaults: Sold blue, Unsold pink, Settled grey, Reserved orange)?" Otherwise ask "Anything else to colour?". Files last only for this session: tell the user to download them.
+## 4. Report (always, keep it short)
+1. Offer as downloads: the coloured PDF (`r["out"]`), the check images zip (`r["checks_zip"]`) and the log
+   (`r["log_csv"]`). Show at most the 3 images in `r["preview"]`; never display every check image.
+2. Counts per colour from `r["coloured"]`, e.g. "Coloured 60: 32 pink (unsold), 22 grey (settled), 6 blue (sold)".
+3. Not coloured, one line per reason from `r["not_found"]`: "level not in this drawing set" (normal when the PDF
+   has only some floors) and "no unit tag on its sheet". Never list every unit row in the chat; the log has them.
+4. After a default run, offer: "Want me to FILL each whole apartment instead, or change colours (defaults: Sold
+   blue, Unsold pink, Settled grey, Reserved orange)?" Files last only for this session: tell the user to
+   download them.

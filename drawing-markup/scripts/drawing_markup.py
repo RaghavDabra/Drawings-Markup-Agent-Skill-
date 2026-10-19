@@ -88,13 +88,16 @@ class Work:
         pngs = []
         if check_dir:
             os.makedirs(check_dir, exist_ok=True)
+            lists = {}  # one display list per page: building it is the slow part on big sheets
             for n, rect, name in self.checks:
                 p = self.doc[n - 1]
+                if n not in lists:
+                    lists[n] = p.get_displaylist()
                 clip = (rect + (-context, -context, context, context)) * p.rotation_matrix
                 clip &= p.rect
                 zoom = min(4.0, 1600 / max(clip.width, clip.height))
                 path = os.path.join(check_dir, name)
-                p.get_pixmap(matrix=fitz.Matrix(zoom, zoom), clip=clip).save(path)
+                lists[n].get_pixmap(matrix=fitz.Matrix(zoom, zoom), clip=clip).save(path)
                 pngs.append(path)
         return pngs
 
@@ -1104,10 +1107,12 @@ def _legend(work, page, sc, source):
     for i, (k, rgb) in enumerate(sc.items()):
         sh.draw_rect(fitz.Rect(x, y + 12 + 14 * i, x + 18, y + 22 + 14 * i))
         sh.finish(color=rgb, fill=rgb, fill_opacity=0.55, oc=work.ocg)
-    sh.commit()
-    page.insert_text((x, y + 4), ("Sales status: " + source)[:48], fontsize=7, oc=work.ocg)
+    # one commit for the whole legend: each commit re-scans the page's (often huge) content stream
+    sh.insert_text((x, y + 4), ("Sales status: " + source)[:48], fontsize=7)
     for i, k in enumerate(sc):
-        page.insert_text((x + 24, y + 20 + 14 * i), k.capitalize(), fontsize=8, oc=work.ocg)
+        sh.insert_text((x + 24, y + 20 + 14 * i), k.capitalize(), fontsize=8)
+    sh.finish(color=(0, 0, 0), fill=(0, 0, 0), oc=work.ocg)
+    sh.commit()
 
 
 
@@ -1753,6 +1758,78 @@ def inspect(pdf, table=None, sheet=None):
             if k:
                 info["unit_labels"][n] = k
     return info
+
+
+UPLOAD_DIRS = ("/mnt/data", "/mnt/user-data", ".")
+
+
+def find_inputs(folder=None):
+    """The user's attached drawing PDF and sales table: the newest .pdf and .xlsx/.xls/.csv in the upload folder
+    (M365 Copilot puts attachments in /mnt/data), skipping files this script wrote. Returns (pdf, table);
+    either can be None."""
+    def ours(p):
+        return "_colour_coded" in os.path.basename(p).lower() or os.path.basename(p) == "log.csv"
+    for d in ([folder] if folder else UPLOAD_DIRS):
+        if not os.path.isdir(d):
+            continue
+        files = sorted((os.path.join(d, f) for f in os.listdir(d)), key=os.path.getmtime, reverse=True)
+        pdfs = [f for f in files if f.lower().endswith(".pdf") and not ours(f)]
+        tables = [f for f in files if f.lower().endswith((".xlsx", ".xlsm", ".xls", ".csv")) and not ours(f)]
+        if pdfs or tables:
+            return (pdfs[0] if pdfs else None), (tables[0] if tables else None)
+    return None, None
+
+
+def colour_by_status(pdf=None, table=None, out=None, style="label", status_colours=None, aspect=None, folder=None):
+    """Everything for sale-status colouring in ONE call, so the agent needs one code run: find the attachments,
+    refuse scans, colour, write the log. Returns a short summary to report from:
+    ok, message, pdf, table, out, log_csv, check_dir, pages, rows, statuses, coloured {colour word: n},
+    not_found {"level not in this drawing set": [...], "no unit tag on its sheet": [...]}."""
+    if pdf is None or table is None:
+        fp, ft = find_inputs(folder)
+        pdf, table = pdf or fp, table or ft
+    if not pdf:
+        return {"ok": False, "message": "No drawing PDF attached. Please attach the drawing PDF and the sales Excel."}
+    if not table:
+        return {"ok": False, "message": "No sales Excel attached. Please attach the sales schedule to colour units by sale status."}
+    info = inspect(pdf, table)
+    base = os.path.dirname(os.path.abspath(pdf))
+    summary = {"ok": info["ok"], "pdf": pdf, "table": table, "pages": info["pages"], "rows": info.get("rows"),
+               "statuses": info.get("statuses"), "unit_label_pages": sorted(info.get("unit_labels", {}))}
+    if not info["ok"]:
+        summary["message"] = SCAN_MESSAGE
+        return summary
+    stem = os.path.splitext(os.path.basename(pdf))[0]
+    out = out or os.path.join(base, stem + "_Colour_Coded.pdf")
+    check_dir = os.path.join(base, "checks")
+    log = run_units(pdf, out, table, status_colours=status_colours, aspect=aspect, check_dir=check_dir, style=style)
+    log_csv = os.path.splitext(out)[0] + "_log.csv"
+    write_log(log, log_csv)
+    coloured = collections.Counter()
+    done = set()
+    for r in log:                              # style="rooms" logs a fill row and a label row: count each unit once
+        st, key = str(r.get("status", "")), _UnitKeys.canon(r.get("target"))
+        if st.startswith("coloured") and key not in done:
+            coloured[st.replace("coloured ", "")] += 1
+            done.add(key)
+    level_of = {_UnitKeys.canon(_pick(r, *UNIT_COLS)): _pick(r, "level", "floor", "lvl") for r in read_table(table)}
+    found_levels = {level_of.get(u) for u in done} - {None, ""}
+    missing = [r["target"] for r in log if str(r.get("status", "")).startswith("NOT")
+               and _UnitKeys.canon(r["target"]) not in done]
+    nf = {"level not in this drawing set": [], "no unit tag on its sheet": []}
+    for u in dict.fromkeys(missing):
+        lvl = level_of.get(_UnitKeys.canon(u))
+        nf["no unit tag on its sheet" if lvl and lvl in found_levels else "level not in this drawing set"].append(u)
+    pngs = sorted(f for f in os.listdir(check_dir) if f.endswith(".png")) if os.path.isdir(check_dir) else []
+    checks_zip = os.path.splitext(out)[0] + "_checks.zip"
+    import zipfile
+    with zipfile.ZipFile(checks_zip, "w", zipfile.ZIP_DEFLATED) as z:  # one download instead of dozens of images
+        for f in pngs:
+            z.write(os.path.join(check_dir, f), f)
+    summary.update(checks_zip=checks_zip, preview=[os.path.join(check_dir, f) for f in pngs[:3]])
+    summary.update(out=out, log_csv=log_csv, check_dir=check_dir, coloured=dict(coloured),
+                   not_found={k: v for k, v in nf.items() if v})
+    return summary
 
 
 if __name__ == "__main__":
