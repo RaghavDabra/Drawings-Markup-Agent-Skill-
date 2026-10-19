@@ -122,3 +122,20 @@ def test_small_copies_keeps_coloured_sheets_and_splits_to_fit(tmp_path):
     one = dm._small_copies(out, [2, 3], limit=1)        # nothing fits: one sheet per part
     assert [len(fitz.open(p)) for p in one] == [1, 1]
     assert "SHEET 2" in fitz.open(one[0])[0].get_text() and "SHEET 3" in fitz.open(one[1])[0].get_text()
+
+
+def test_tower_code_on_plan_matches_schedule_lot_number():
+    # Sky Garden: plan labels B3.01 (tower, level . unit), schedule lists 301B (level, unit, tower)
+    page = _page_with([((100, 100), "B3.01"), ((300, 100), "A3.01"), ((100, 300), "B3.02")])
+    keys = dm._UnitKeys()
+    keys.setdefault("301B", [])
+    assert "B3.01" in keys and "A3.01" not in keys
+    rects = dm._unit_label_rects(page, keys)
+    assert list(rects) == [dm._UnitKeys.canon("301B")] and rects[dm._UnitKeys.canon("301B")].x0 < 200
+
+
+def test_tower_code_alone_is_not_a_label_without_a_schedule_match():
+    page = _page_with([((100, 100), "B3.01")])
+    keys = dm._UnitKeys()
+    keys.setdefault("B3.01", [])          # the schedule uses the plan's own code: needs a UNIT tag or area as before
+    assert dm._unit_label_rects(page, keys) == {}

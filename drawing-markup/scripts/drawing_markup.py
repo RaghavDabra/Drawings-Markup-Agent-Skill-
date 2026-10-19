@@ -655,6 +655,9 @@ def _pick(row, *names):
     return ""
 
 
+_TOWER_CODE_RE = re.compile(r"([A-Za-z])([0-9]{1,2})\.([0-9]{2})")   # tower + level . unit, e.g. B3.01
+
+
 class _UnitKeys(dict):
     """Unit lookup that treats 3.1, 3.10 and 03.10 as the same unit. Excel often stores unit numbers as
     numbers, which drops the leading and trailing zeros the drawings show."""
@@ -671,6 +674,11 @@ class _UnitKeys(dict):
         c = self.canon(k)
         if dict.__contains__(self, c):
             return c
+        m = _TOWER_CODE_RE.fullmatch(str(k).strip().rstrip("+*"))
+        if m:                                          # drawing B3.01 = schedule 301B (level, unit, tower)
+            t = self.canon("%s%s%s" % (m.group(2), m.group(3), m.group(1).upper()))
+            if dict.__contains__(self, t):
+                return t
         m = re.fullmatch(r"[A-Za-z]+[0-9]*[.\-]([0-9]+)", str(k).strip().rstrip("+*"))
         return self.canon(m.group(1)) if m else c
     def __contains__(self, k): return dict.__contains__(self, self._key(k))
@@ -813,10 +821,12 @@ def _unit_label_rects(page, by_id):
             if near is None or d < near[0]:
                 near = (d, ar)
         if near is None:
-            if not named:
+            # a tower code (B3.01) that matched a schedule unit (301B) is a label on its own, no area needed
+            coded = _TOWER_CODE_RE.fullmatch(t) is not None and key != _UnitKeys.canon(t)
+            if not (named or coded):
                 continue
             grp = wr                                   # "UNIT 4" / "UNIT 2U.01 507" with no area figure
-            if not stacked:                            # a stacked tag is shared by floors: mark only this number
+            if named and not stacked:                  # a stacked tag is shared by floors: mark only this number
                 for w in ws[head:i]:
                     grp |= fitz.Rect(w[:4])
             if key not in best:
