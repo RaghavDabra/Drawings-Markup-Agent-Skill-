@@ -1383,9 +1383,9 @@ def apartment_masks(page, labels, m_per_pt, PX=1.5, G=6):
     cand = [c for c in range(1, n + 1) if c not in owner and c not in bg and c not in common
             and area[c] * m2px >= 0.3]
     touch = {}
-    for c in cand:
-        ys, xs = np.nonzero(lab == c)
-        y0, y1, x0, x1 = max(0, ys.min() - wt), min(H, ys.max() + wt + 1), max(0, xs.min() - wt), min(W, xs.max() + wt + 1)
+    for c in cand:                       # each cell's own window (bounding boxes computed once above)
+        y0, y1 = max(0, y0s[c] - wt), min(H, y1s[c] + wt + 1)
+        x0, x1 = max(0, x0s[c] - wt), min(W, x1s[c] + wt + 1)
         sub = lab[y0:y1, x0:x1]
         ring = _dilate(sub == c, wt) & (sub != c) & (sub > 0)
         touch[c] = {t for t in np.unique(sub[ring]).tolist() if t != c and t not in bg and area[t] * m2px >= 0.3}
@@ -1415,10 +1415,16 @@ def apartment_masks(page, labels, m_per_pt, PX=1.5, G=6):
     big_free = [c for c in range(1, n + 1) if c not in owner and c not in bg and area[c] * m2px >= small]
     r = int(0.3 / m_per_pt * PX) + 1
     masks = {}
+    pad = 2 * r + 2                      # work in the unit's own window: dilate+erode by r only reach 2r out
     for key in seeds:
         cs = [c for c, k in owner.items() if k == key]
-        m = np.isin(lab, cs)
-        others = np.isin(lab, [c for c, k in owner.items() if k != key] + list(common) + big_free)
+        if not cs:
+            continue
+        wy0, wy1 = max(0, min(y0s[c] for c in cs) - pad), min(H, max(y1s[c] for c in cs) + pad + 1)
+        wx0, wx1 = max(0, min(x0s[c] for c in cs) - pad), min(W, max(x1s[c] for c in cs) + pad + 1)
+        lw = lab[wy0:wy1, wx0:wx1]
+        m = np.isin(lw, cs)
+        others = np.isin(lw, [c for c, k in owner.items() if k != key] + list(common) + big_free)
         mm = _erode(_dilate(m, r), r) & ~others          # take in the unit's own internal walls
         ys, xs = np.nonzero(mm)
         if len(xs) == 0:
@@ -1433,18 +1439,19 @@ def apartment_masks(page, labels, m_per_pt, PX=1.5, G=6):
         keep = ha < small; keep[0] = False
         full = np.zeros_like(mm)
         full[y0:y1, x0:x1] = sub | keep[hl]
-        masks[key] = (full & ~others, len(cs), float(m.sum()) * m2px)
+        masks[key] = (wy0, wx0, full & ~others, len(cs), float(m.sum()) * m2px)
     # a pixel claimed by two units (shared wall) goes to neither
-    if masks:
-        cnt = sum(v[0].astype(np.uint8) for v in masks.values())
+    cnt = np.zeros((H, W), np.uint8)
+    for wy0, wx0, full, _nc, _a in masks.values():
+        cnt[wy0:wy0 + full.shape[0], wx0:wx0 + full.shape[1]] += full
     out = {}
-    for key, (full, nc, a) in masks.items():
-        full &= cnt == 1
+    for key, (wy0, wx0, full, nc, a) in masks.items():
+        full &= cnt[wy0:wy0 + full.shape[0], wx0:wx0 + full.shape[1]] == 1
         ys, xs = np.nonzero(full)
         if len(xs) == 0:
             continue
         y0, y1, x0, x1 = ys.min(), ys.max() + 1, xs.min(), xs.max() + 1
-        out[key] = (fitz.Rect(x0 / PX, y0 / PX, x1 / PX, y1 / PX) + (page.rect.x0, page.rect.y0, page.rect.x0, page.rect.y0),
+        out[key] = (fitz.Rect((x0 + wx0) / PX, (y0 + wy0) / PX, (x1 + wx0) / PX, (y1 + wy0) / PX) + (page.rect.x0, page.rect.y0, page.rect.x0, page.rect.y0),
                     full[y0:y1, x0:x1], nc, a)
     return out, {"cells": n, "doors": sum(len(v) for v in adj.values()) // 2, "common": len(common)}
 
