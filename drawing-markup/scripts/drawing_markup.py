@@ -73,6 +73,7 @@ class Work:
             self.ocg = 0
         self.log = []          # one dict per target
         self.checks = []       # (page_no, rect, png_name)
+        self.max_checks = None # render only the first n check images (each new sheet rendered costs seconds)
 
     def page(self, n):          # n is 1-based, as people say it
         p = self.doc[n - 1]
@@ -89,7 +90,7 @@ class Work:
         if check_dir:
             os.makedirs(check_dir, exist_ok=True)
             lists = {}  # one display list per page: building it is the slow part on big sheets
-            for n, rect, name in self.checks:
+            for n, rect, name in self.checks[:self.max_checks]:
                 p = self.doc[n - 1]
                 if n not in lists:
                     lists[n] = p.get_displaylist()
@@ -830,7 +831,7 @@ def _unit_label_rects(page, by_id):
 def run_units(pdf, out_pdf, table, pages=None, status_colours=None, aspect=None, check_dir=None,
               unit_col=UNIT_COLS, status_col=STATUS_COLS,
               aspect_col=("aspect", "orientation", "facing"), tag_col=("tag contains", "building"), sheet=None,
-              style="label"):
+              style="label", max_checks=None):
     """Colour each unit by its sales status. Default colours: sold blue, unsold pink, settled grey, reserved
     orange (override with status_colours={"sold": ..., ...}). aspect='north' limits to rows whose aspect contains it.
     style="label" (default) highlights each apartment's number+area label in its status colour - reliable on any
@@ -841,6 +842,7 @@ def run_units(pdf, out_pdf, table, pages=None, status_colours=None, aspect=None,
     status_colours = dict(status_colours or STATUS_COLOURS)
     rows = read_table(table, sheet, unit_col, status_col)
     work = Work(pdf)
+    work.max_checks = max_checks
     pages = list(pages or range(1, len(work.doc) + 1))
     wanted = []
     for r in rows:
@@ -1728,15 +1730,16 @@ SCAN_MESSAGE = ("This file has no vector linework or text the script can read. "
                 "Please send the PDF exported from CAD.")
 
 
-def inspect(pdf, table=None, sheet=None):
+def inspect(pdf, table=None, sheet=None, labels=True):
     """Setup check before any colouring. Returns a dict:
     pages, readable (vector pages with text), scanned (image-only pages), ok (False when nothing is readable:
     show SCAN_MESSAGE and stop), and with a table: rows, statuses {status: count}, and unit_labels
-    {page: n} - how many of the table's units have a label the script can find on each page."""
+    {page: n} - how many of the table's units have a label the script can find on each page (labels=False skips
+    that: it reads every sheet's text, the slow part)."""
     doc = fitz.open(pdf)
     readable, scanned = [], []
     for n, p in enumerate(doc, 1):
-        if p.get_text("words"):
+        if p.get_fonts() or p.get_text("words"):     # fonts: cheap test that the page has real text
             readable.append(n)
         else:
             covered = sum(fitz.Rect(i["bbox"]).get_area() for i in p.get_image_info())
@@ -1753,7 +1756,7 @@ def inspect(pdf, table=None, sheet=None):
         for r in rows:
             by_id.setdefault(_pick(r, *UNIT_COLS), []).append(r)
         info["unit_labels"] = {}
-        for n in readable:
+        for n in (readable if labels else []):
             k = len(_unit_label_rects(doc[n - 1], by_id))
             if k:
                 info["unit_labels"][n] = k
@@ -1780,11 +1783,13 @@ def find_inputs(folder=None):
     return None, None
 
 
-def colour_by_status(pdf=None, table=None, out=None, style="label", status_colours=None, aspect=None, folder=None):
+def colour_by_status(pdf=None, table=None, out=None, style="label", status_colours=None, aspect=None, folder=None,
+                     checks=3):
     """Everything for sale-status colouring in ONE call, so the agent needs one code run: find the attachments,
     refuse scans, colour, write the log. Returns a short summary to report from:
     ok, message, pdf, table, out, log_csv, check_dir, pages, rows, statuses, coloured {colour word: n},
-    not_found {"level not in this drawing set": [...], "no unit tag on its sheet": [...]}."""
+    not_found {"level not in this drawing set": [...], "no unit tag on its sheet": [...]}.
+    checks: how many check images to render (default 3, None = one per unit; each sheet rendered costs time)."""
     if pdf is None or table is None:
         fp, ft = find_inputs(folder)
         pdf, table = pdf or fp, table or ft
@@ -1792,17 +1797,22 @@ def colour_by_status(pdf=None, table=None, out=None, style="label", status_colou
         return {"ok": False, "message": "No drawing PDF attached. Please attach the drawing PDF and the sales Excel."}
     if not table:
         return {"ok": False, "message": "No sales Excel attached. Please attach the sales schedule to colour units by sale status."}
-    info = inspect(pdf, table)
+    info = inspect(pdf, table, labels=False)
     base = os.path.dirname(os.path.abspath(pdf))
     summary = {"ok": info["ok"], "pdf": pdf, "table": table, "pages": info["pages"], "rows": info.get("rows"),
-               "statuses": info.get("statuses"), "unit_label_pages": sorted(info.get("unit_labels", {}))}
+               "statuses": info.get("statuses")}
     if not info["ok"]:
         summary["message"] = SCAN_MESSAGE
         return summary
     stem = os.path.splitext(os.path.basename(pdf))[0]
     out = out or os.path.join(base, stem + "_Colour_Coded.pdf")
     check_dir = os.path.join(base, "checks")
-    log = run_units(pdf, out, table, status_colours=status_colours, aspect=aspect, check_dir=check_dir, style=style)
+    if os.path.isdir(check_dir):                 # a rerun must not mix in the previous run's images
+        for f in os.listdir(check_dir):
+            if f.endswith(".png"):
+                os.remove(os.path.join(check_dir, f))
+    log = run_units(pdf, out, table, status_colours=status_colours, aspect=aspect, check_dir=check_dir, style=style,
+                    max_checks=checks)
     log_csv = os.path.splitext(out)[0] + "_log.csv"
     write_log(log, log_csv)
     coloured = collections.Counter()
@@ -1827,6 +1837,7 @@ def colour_by_status(pdf=None, table=None, out=None, style="label", status_colou
         for f in pngs:
             z.write(os.path.join(check_dir, f), f)
     summary.update(checks_zip=checks_zip, preview=[os.path.join(check_dir, f) for f in pngs[:3]])
+    summary["unit_label_pages"] = sorted({r["page"] for r in log if r.get("page")})
     summary.update(out=out, log_csv=log_csv, check_dir=check_dir, coloured=dict(coloured),
                    not_found={k: v for k, v in nf.items() if v})
     return summary

@@ -27,6 +27,10 @@ print(r)
 - Pass `status_colours={"sold": dm.colour("green"), "unsold": dm.colour("red")}` ONLY when the user names
   colours; statuses left out of it stay uncoloured. Follow-ups ("make sold green", "fill instead") rerun the same
   block with the new arguments: it always starts from the ORIGINAL attached PDF.
+- Give the code run the longest timeout allowed. If it still times out, do NOT list files or rerun the same
+  thing: run the block once more with `dm.colour_by_status(checks=0)` (no check images, fastest). If that also
+  times out, tell the user the drawing set is too large for one run and to send only the floor-plan sheets.
+- All check images (one per unit) only when the user asks: `dm.colour_by_status(checks=None)`.
 - If the import fails, show the exact error and stop. Never write replacement code, never ask the user to attach
   the script.
 
@@ -60,7 +64,7 @@ Then always: `dm.write_log(log, "log.csv")`. (Sale-status colouring uses section
 - Two operations in different colours: run the second on the first one's output.
 
 ## 4. Report (always, keep it short)
-1. Offer as downloads: the coloured PDF (`r["out"]`), the check images zip (`r["checks_zip"]`) and the log
+1. Offer as downloads: the coloured PDF (`r["out"]`), the check images zip (`r["checks_zip"]`, 3 images by default; offer all of them) and the log
    (`r["log_csv"]`). Show at most the 3 images in `r["preview"]`; never display every check image.
 2. Counts per colour from `r["coloured"]`, e.g. "Coloured 60: 32 pink (unsold), 22 grey (settled), 6 blue (sold)".
 3. Not coloured, one line per reason from `r["not_found"]`: "level not in this drawing set" (normal when the PDF
