@@ -606,7 +606,7 @@ def _dist(a, b):
     return math.hypot(dx, dy)
 
 
-UNIT_COLS = ("unit", "unit no", "unit no.", "apartment", "apt", "apt no", "lot", "lot no")
+UNIT_COLS = ("unit", "unit no", "unit no.", "apartment", "apt", "apt no", "new unit no", "new unit", "lot", "lot no")
 STATUS_COLS = ("status", "sale status", "sales status", "sold")
 
 
@@ -757,12 +757,71 @@ def _area_anchors(ws):
 _UNIT_PREFIX = {"UNIT", "APARTMENT", "APT", "APT.", "LOT", "TOWNHOUSE", "VILLA", "RESIDENCE", "DWELLING", "SHOP"}
 
 
-def _unit_label_rects(page, by_id):
+def _words(page):
+    """page words, with "103/87" (unit/area) split in two and a trailing "/" dropped from "103/"."""
+    out = []
+    for w in page.get_text("words"):
+        t = w[4].strip()
+        m = re.fullmatch(r"([0-9]{2,5})/([0-9]{2,4}(?:\.[0-9]+)?)", t)
+        if m:
+            x0, y0, x1, y1 = w[:4]
+            f = len(m.group(1)) / len(t)
+            if (x1 - x0) >= (y1 - y0):
+                xm = x0 + f * (x1 - x0); a, b = (x0, y0, xm, y1), (xm, y0, x1, y1)
+            else:
+                ym = y0 + f * (y1 - y0); a, b = (x0, y0, x1, ym), (x0, ym, x1, y1)
+            out.append(a + (m.group(1),) + tuple(w[5:])); out.append(b + (m.group(2),) + tuple(w[5:]))
+        elif re.fullmatch(r"[0-9]{2,5}/", t):
+            out.append(tuple(w[:4]) + (t[:-1],) + tuple(w[5:]))
+        else:
+            out.append(w)
+    return out
+
+
+_BLDG_RE = re.compile(r"^(?:BLDG|BUILDING|BLOCK|TOWER)$", re.I)
+
+
+def _building_tags(page):
+    """[(rect, letter)] for "BLDG B" / "BUILDING C" / "TOWER 1" texts on the sheet."""
+    ws = page.get_text("words"); out = []
+    for i, w in enumerate(ws[:-1]):
+        if _BLDG_RE.match(w[4].strip()) and re.fullmatch(r"[A-Z0-9]{1,2}", ws[i + 1][4].strip()):
+            out.append((fitz.Rect(w[:4]) | fitz.Rect(ws[i + 1][:4]), ws[i + 1][4].strip()))
+    return out
+
+
+def _row_for_label(page, rows, R):
+    """Pick the table row for a label. One row: it. Several rows with a Building/Tag value (two buildings
+    both have a 103): the one whose building name is written nearest this label on the sheet."""
+    keep = [x for x in rows if x["keep"]]
+    if len(keep) <= 1 or not any(x.get("tag") for x in keep):
+        return keep[0] if keep else None
+    tags = _building_tags(page)
+    if not tags:
+        return None
+    c = (R.tl + R.br) / 2
+    near = min(tags, key=lambda t: abs((t[0].tl + t[0].br) / 2 - c))[1]
+    hit = [x for x in keep if x.get("tag", "").strip().upper() == near.upper()]
+    if len(hit) > 1 and any(x.get("level") for x in hit):  # same number twice in one building: use the sheet's level
+        lv = set(re.findall(r"\bLEVEL\s+([0-9]+|G|GROUND)\b", page.get_text().upper()))
+        hit = [x for x in hit if str(x.get("level", "")).strip().upper() in lv]
+    return hit[0] if len(hit) == 1 else None
+
+
+def _unit_label_rects(page, by_id, all_hits=False):
     """Find each unit's apartment label: its number sitting beside its floor-area figure.
-    Returns {unit_key: fitz.Rect}. See the module comment above for the (strict) matching rule."""
-    ws = page.get_text("words")
+    Returns {unit_key: fitz.Rect}; all_hits=True returns [(unit_key, rect)] with every separate label
+    (the same number in two buildings). See the module comment above for the (strict) matching rule."""
+    ws = _words(page)
     anchors = _area_anchors(ws)
-    best = {}
+    best, hits = {}, []
+    def keep(key, grp, strong=True):
+        for h in hits:
+            if h[0] == key and (h[1] + (-30, -30, 30, 30)).intersects(grp):
+                if strong and grp.get_area() > h[1].get_area():
+                    h[1] = grp
+                return
+        hits.append([key, grp])
     for i, wd in enumerate(ws):
         t = wd[4].strip()
         if re.search(r"-\d", t):                       # door / window tag like 1.03-01
@@ -795,11 +854,13 @@ def _unit_label_rects(page, by_id):
             grp = wr | fitz.Rect(prev[:4])             # "UNIT 4" with no area figure (DA / sketch plans)
             if key not in best:
                 best[key] = grp
+            keep(key, grp, strong=False)
             continue
         grp = wr | near[1]
         if key not in best or grp.get_area() > best[key].get_area():
             best[key] = grp
-    return best
+        keep(key, grp)
+    return [tuple(h) for h in hits] if all_hits else best
 
 
 def run_units(pdf, out_pdf, table, pages=None, status_colours=None, aspect=None, check_dir=None,
@@ -821,7 +882,8 @@ def run_units(pdf, out_pdf, table, pages=None, status_colours=None, aspect=None,
     for r in rows:
         u = _pick(r, *unit_col); s = status_of(_pick(r, *status_col)); a = _pick(r, *aspect_col)
         keep = not aspect or aspect.lower() in a.lower()
-        wanted.append({"unit": u, "status": s, "aspect": a, "tag": _pick(r, *tag_col), "keep": keep})
+        wanted.append({"unit": u, "status": s, "aspect": a, "tag": _pick(r, *tag_col), "keep": keep,
+                       "level": _pick(r, "level", "floor")})
     by_id = _UnitKeys()
     for w in wanted:
         by_id.setdefault(w["unit"], []).append(w)
@@ -836,23 +898,31 @@ def run_units(pdf, out_pdf, table, pages=None, status_colours=None, aspect=None,
     else:
         log_fill = []
     if style == "label":
-        done = set()
+        done = set()                                   # ids of table rows coloured somewhere
         for n in pages:
             page = work.page(n)
-            labels = _unit_label_rects(page, by_id)
-            for key, R in labels.items():
-                w = next((x for x in by_id[key] if x["keep"]), None)
-                if not w or (only_listed and w["status"] not in status_colours):
+            labels = _unit_label_rects(page, by_id, all_hits=True)
+            for key, R in labels:
+                w = _row_for_label(page, by_id[key], R)
+                unit = by_id[key][0]["unit"]
+                if w is None:
+                    if any(x["keep"] for x in by_id[key]):
+                        work.log.append({"page": n, "target": unit, "found_at": _fmt(R), "status": "NOT coloured",
+                                         "reason": "unit number used by several buildings and no building name near this label"})
+                    continue
+                if only_listed and w["status"] not in status_colours:
                     continue
                 rgb = status_colours.get(w["status"], colour("yellow"))
                 an = page.add_highlight_annot(R + (-2, -2, 2, 2))
                 an.set_colors(stroke=tuple(rgb)); an.set_opacity(0.5); an.update()
-                unit = by_id[key][0]["unit"]
                 work.checks.append((n, R, f"check_p{n}_{_safe(unit)}.png"))
-                if key not in done:
-                    work.log.append({"page": n, "target": unit, "status_in_table": by_id[key][0]["status"],
-                                     "method": "label highlight", "status": _status_word(w["status"], status_colours)})
-                    done.add(key)
+                if id(w) not in done:
+                    row = {"page": n, "target": unit, "status_in_table": w["status"],
+                           "method": "label highlight", "status": _status_word(w["status"], status_colours)}
+                    if w.get("tag"):
+                        row["building"] = w["tag"]
+                    work.log.append(row)
+                    done.add(id(w))
             if labels:
                 _legend(work, page, status_colours, os.path.basename(str(table)))
         work.log = log_fill + work.log
@@ -860,8 +930,8 @@ def run_units(pdf, out_pdf, table, pages=None, status_colours=None, aspect=None,
             if only_listed and w["status"] not in status_colours:
                 work.log.append({"target": w["unit"], "status_in_table": w["status"], "status": "left uncoloured (status not in the colour list)"})
                 continue
-            if w["keep"] and _UnitKeys.canon(w["unit"]) not in done:
-                work.log.append({"target": w["unit"], "status_in_table": w["status"],
+            if w["keep"] and id(w) not in done:
+                work.log.append({"target": w["unit"], "status_in_table": w["status"], "building": w.get("tag", ""),
                                  "status": "NOT found (no label with an area figure on the sheets searched)"})
         work.save(out_pdf, check_dir, context=25)
         return work.log
