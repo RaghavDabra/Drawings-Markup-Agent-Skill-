@@ -1766,6 +1766,40 @@ def inspect(pdf, table=None, sheet=None, labels=True):
 UPLOAD_DIRS = ("/mnt/data", "/mnt/user-data", ".")
 
 
+DOWNLOAD_LIMIT = 14 * 1024 * 1024   # Copilot's code interpreter drops files over ~15-16 MB
+
+
+def _small_copies(out, pages, limit=DOWNLOAD_LIMIT):
+    """A coloured PDF over the download limit: save only its coloured sheets ('..._sheets.pdf'), split into
+    parts that each fit if needed. Returns the files to hand over (just [out] when it already fits)."""
+    if os.path.getsize(out) <= limit or not pages:
+        return [out]
+    stem = os.path.splitext(out)[0]
+    def save(sel, path):
+        d = fitz.open(out)
+        d.select([n - 1 for n in sel])
+        d.save(path, garbage=4, deflate=True, use_objstms=1)
+        return os.path.getsize(path)
+    one = stem + "_sheets.pdf"
+    if save(pages, one) <= limit or len(pages) == 1:
+        return [one]
+    os.remove(one)
+    parts, cur = [], []
+    for n in pages:                                   # grow each part sheet by sheet until it would not fit
+        path = "%s_sheets_part%d.pdf" % (stem, len(parts) + 1)
+        if cur and save(cur + [n], path) > limit:
+            save(cur, path)
+            parts.append(path)
+            cur = [n]
+        else:
+            cur.append(n)
+    if cur:
+        path = "%s_sheets_part%d.pdf" % (stem, len(parts) + 1)
+        save(cur, path)
+        parts.append(path)
+    return parts
+
+
 def _is_output(path):
     return "_colour_coded" in os.path.basename(path).lower() or os.path.basename(path) == "log.csv"
 
@@ -1798,7 +1832,9 @@ def colour_by_status(pdf=None, table=None, out=None, style="label", status_colou
     ok, message, table, rows, statuses, coloured {colour word: n}, not_found {"level not in this drawing set":
     [...], "no unit tag on its sheet": [...]}, files [{pdf, pages, ok, out, log_csv, unit_label_pages}],
     scanned [pdfs refused as scans], preview [up to `checks` check PNGs], checks_zip, and download_zip (all
-    coloured PDFs, logs and checks in one file). With one PDF also out, log_csv, pdf, pages, unit_label_pages.
+    coloured PDFs, logs and checks in one file), downloads (exactly the files to hand over, each under the
+    ~15 MB Copilot limit: a big coloured PDF becomes its coloured sheets only, split into parts if needed).
+    With one PDF also out, log_csv, pdf, pages, unit_label_pages.
     pdf may be a path or a list. checks: check images to render in total (default 3, None = one per unit)."""
     pdfs, found_table = ([], None) if (pdf is not None and table is not None) else find_all_inputs(folder)
     pdfs = [pdf] if isinstance(pdf, str) else list(pdf or pdfs)
@@ -1838,7 +1874,8 @@ def colour_by_status(pdf=None, table=None, out=None, style="label", status_colou
         pngs += made
         if budget is not None:
             budget = max(0, budget - len(made))
-        entry.update(out=o, log_csv=log_csv, unit_label_pages=sorted({r["page"] for r in log if r.get("page")}))
+        lp = sorted({r["page"] for r in log if r.get("page")})
+        entry.update(out=o, log_csv=log_csv, unit_label_pages=lp, downloads=_small_copies(o, lp))
         logs.append(log)
     if not logs:
         summary["message"] = SCAN_MESSAGE
@@ -1878,15 +1915,28 @@ def colour_by_status(pdf=None, table=None, out=None, style="label", status_colou
     if len(ok_files) == 1:
         f = ok_files[0]
         summary.update(pdf=f["pdf"], pages=f["pages"], out=f["out"], log_csv=f["log_csv"],
-                       unit_label_pages=f["unit_label_pages"])
+                       unit_label_pages=f["unit_label_pages"], downloads=f["downloads"] + [f["log_csv"], checks_zip])
     else:
         download_zip = os.path.join(base, "All_Colour_Coded.zip")
         with zipfile.ZipFile(download_zip, "w", zipfile.ZIP_DEFLATED) as z:
             for f in ok_files:
-                z.write(f["out"], os.path.basename(f["out"]))
+                for d in f["downloads"]:
+                    z.write(d, os.path.basename(d))
                 z.write(f["log_csv"], os.path.basename(f["log_csv"]))
             z.write(checks_zip, os.path.basename(checks_zip))
         summary["download_zip"] = download_zip
+        zips = [download_zip]
+        if os.path.getsize(download_zip) > DOWNLOAD_LIMIT:   # too big for one download: one zip per drawing
+            os.remove(download_zip)
+            zips = []
+            for f in ok_files:
+                zp = os.path.splitext(f["out"])[0] + ".zip"
+                with zipfile.ZipFile(zp, "w", zipfile.ZIP_DEFLATED) as z:
+                    for d in f["downloads"] + [f["log_csv"]]:
+                        z.write(d, os.path.basename(d))
+                zips.append(zp)
+            summary["download_zip"] = None
+        summary["downloads"] = zips + [checks_zip]
     return summary
 
 

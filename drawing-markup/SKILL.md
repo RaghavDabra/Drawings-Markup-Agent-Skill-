@@ -67,8 +67,10 @@ Then always: `dm.write_log(log, "log.csv")`. (Sale-status colouring uses section
 - Two operations in different colours: run the second on the first one's output.
 
 ## 4. Report (always, keep it short)
-1. Offer as downloads: the coloured PDF (`r["out"]`, or `r["download_zip"]` for several PDFs), the check images zip (`r["checks_zip"]`, 3 images by default; offer all of them) and the log
-   (`r["log_csv"]`). Show at most the 3 images in `r["preview"]`; never display every check image.
+1. Offer exactly the files in `r["downloads"]` as downloads, nothing else: each is under Copilot's ~15 MB file
+   limit. A name ending `_sheets.pdf` (or `_sheets_partN.pdf`) means the full set was too big, so it holds only
+   the coloured sheets; say so in one line. Show at most the 3 images in `r["preview"]`; never display every
+   check image.
 2. Counts per colour from `r["coloured"]`, e.g. "Coloured 60: 32 pink (unsold), 22 grey (settled), 6 blue (sold)".
 3. Not coloured, one line per reason from `r["not_found"]`: "level not in this drawing set" (normal when the PDF
    has only some floors) and "no unit tag on its sheet". Never list every unit row in the chat; the log has them.

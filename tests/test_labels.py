@@ -108,3 +108,17 @@ def test_colour_by_status_handles_several_pdfs_and_skips_scans(tmp_path):
     assert "L5_Colour_Coded.pdf" in names and "L6_Colour_Coded.pdf" in names
     again = dm.colour_by_status(folder=str(tmp_path))    # a rerun must ignore its own outputs
     assert len(again["files"]) == 3 and again["coloured"] == r["coloured"]
+
+
+def test_small_copies_keeps_coloured_sheets_and_splits_to_fit(tmp_path):
+    import fitz
+    doc = fitz.open()
+    for i in range(4):
+        page = doc.new_page(width=600, height=400)
+        page.insert_text((50, 50), "SHEET %d " % (i + 1) + "x" * 3000, fontsize=4)
+    out = str(tmp_path / "big_Colour_Coded.pdf")
+    doc.save(out)
+    assert dm._small_copies(out, [2, 3], limit=10 ** 9) == [out]
+    one = dm._small_copies(out, [2, 3], limit=1)        # nothing fits: one sheet per part
+    assert [len(fitz.open(p)) for p in one] == [1, 1]
+    assert "SHEET 2" in fitz.open(one[0])[0].get_text() and "SHEET 3" in fitz.open(one[1])[0].get_text()
