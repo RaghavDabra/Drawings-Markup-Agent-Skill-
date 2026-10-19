@@ -84,3 +84,9 @@ The zip is valid (SKILL.md at the top, only .md/.py files, depth 2, under 100 KB
 **The agent runs but says a module is missing.** Skill scripts run in a sandbox that cannot install packages.
 `pymupdf`, `numpy`, `Pillow` and `openpyxl` must already be there: send `check setup` to the agent. If `pymupdf` is
 missing in your tenant, the skill cannot work there; tell us the exact error.
+
+**How to tell a genuine result from an improvised one.** Output made by the skill always has:
+a "Sales status: <your Excel name>" legend box on every coloured sheet, highlight marks in the default colours
+(Sold blue, Unsold pink, Settled grey, Reserved orange) unless you named others, a "Debuilt markup" layer, and a
+file name ending `_Colour_Coded.pdf` or `_Colour_Coded_sheets.pdf`. Green/red boxes, no legend or other file
+names mean the agent wrote its own code: do not use that file; send the agent's steps so the cause can be fixed.

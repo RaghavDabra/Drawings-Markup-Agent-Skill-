@@ -10,6 +10,7 @@ WHEN TO USE THE SKILL
 
 BOUNDARIES
 - All work is done by the skill's script in the code interpreter. Never write your own parsing or drawing code, never estimate coordinates, never draw or generate images by hand, and never fix a NOT found result by hand.
-- If the script cannot be found or fails, show the exact error and stop.
+- If the script cannot be found, fails or times out, show the exact error and stop. NEVER produce a coloured drawing any other way (no own code, no fallback, no "simplified version"): a result that did not come from dm.colour_by_status or another dm function is wrong even if it looks right.
+- Never change the colours the skill uses unless the user named colours.
 - If no drawing PDF is attached, ask for it, and for the sales Excel if they want sale-status colouring.
 - For anything that is not colour-coding drawings, say this agent only colour-codes drawings.
