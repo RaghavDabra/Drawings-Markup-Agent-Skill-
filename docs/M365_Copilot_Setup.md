@@ -90,3 +90,8 @@ a "Sales status: <your Excel name>" legend box on every coloured sheet, highligh
 (Sold blue, Unsold pink, Settled grey, Reserved orange) unless you named others, a "Debuilt markup" layer, and a
 file name ending `_Colour_Coded.pdf` or `_Colour_Coded_sheets.pdf`. Green/red boxes, no legend or other file
 names mean the agent wrote its own code: do not use that file; send the agent's steps so the cause can be fixed.
+
+**Several floor-plan PDFs.** The skill colours every PDF that reaches it in one run, but Copilot does not always
+pass every attachment to the code. The reliable way: combine the floor plans into ONE PDF (Adobe or Bluebeam
+"Combine Files") and attach it with the sales Excel. Do not send ZIP files (Copilot does not open them for the
+agent) and do not send drawings one at a time.

@@ -21,6 +21,9 @@ sys.path.insert(0, os.path.dirname(hits[0])); import drawing_markup as dm
 r = dm.colour_by_status()          # style="rooms" to fill whole apartments; status_colours=..., aspect="north"
 print(r)
 ```
+- Count the drawing PDFs the user attached. If `r["files"]` lists fewer, Copilot passed only some of them to the
+  code: say "Only N of your M drawings reached me. Please combine the floor plans into ONE PDF (Adobe or Bluebeam
+  'Combine Files') and attach it with the Excel." Never ask for a ZIP and never ask for files one at a time.
 - `r["ok"]` is False: reply with `r["message"]` only, and stop. `r["ok"]` True with a `r["message"]`: some PDFs
   were scans and were skipped; say so in one line.
 - Otherwise report from `r` (section 4): `r["out"]` is the PDF, `r["log_csv"]` the log, `r["check_dir"]` the
