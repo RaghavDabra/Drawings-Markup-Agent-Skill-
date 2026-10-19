@@ -680,7 +680,12 @@ class _UnitKeys(dict):
             if dict.__contains__(self, t):
                 return t
         m = re.fullmatch(r"[A-Za-z]+[0-9]*[.\-]([0-9]+)", str(k).strip().rstrip("+*"))
-        return self.canon(m.group(1)) if m else c
+        if m:
+            return self.canon(m.group(1))
+        m = re.fullmatch(r"[A-Za-z]{1,4}([0-9]{2,})", str(k).strip().rstrip("+*"))
+        if m and dict.__contains__(self, self.canon(m.group(1))):
+            return self.canon(m.group(1))
+        return c
     def __contains__(self, k): return dict.__contains__(self, self._key(k))
     def __getitem__(self, k): return dict.__getitem__(self, self._key(k))
     def setdefault(self, k, v=None): return dict.setdefault(self, self.canon(k), v)
